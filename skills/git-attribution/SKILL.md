@@ -1,5 +1,5 @@
 ---
-name: github-attribution
+name: git-attribution
 description: Attribute AI-authored GitHub and Azure DevOps content.
 ---
 
@@ -8,7 +8,7 @@ Prepend PR descriptions, issues, comments, and review replies with:
 > [!NOTE]
 > Written by `<current model>` on behalf of <human>
 
-For Azure DevOps, use instead:
+For Azure DevOps or when [!NOTE] is not supported, use instead:
 
 > ℹ️ Written by `<current model>` on behalf of <human>
 
