@@ -5,11 +5,6 @@ description: Attribute AI-authored GitHub and Azure DevOps content.
 
 Prepend PR descriptions, issues, comments, and review replies with:
 
-> [!NOTE]
-> Written by `<current model>` on behalf of <human>
-
-For Azure DevOps or when [!NOTE] is not supported, use instead:
-
 > ℹ️ Written by `<current model>` on behalf of <human>
 
 Use the Git author name or GitHub username for <human>, unless context specifies
