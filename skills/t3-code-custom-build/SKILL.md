@@ -10,10 +10,10 @@ PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded
 
 Run each stage separately; use the printed `run.json` path as `$Run`. State persists across shell calls.
 
-```powershell
-pwsh -NoProfile -File "$Skill/scripts/workflow.ps1" -Stage Sync -Repo $Repo
-pwsh -NoProfile -File "$Skill/scripts/workflow.ps1" -Stage Merge -Run $Run
-pwsh -NoProfile -File "$Skill/scripts/workflow.ps1" -Stage Build -Run $Run
+```pwsh
+& "$Skill/scripts/workflow.ps1" -Stage Sync -Repo $Repo
+& "$Skill/scripts/workflow.ps1" -Stage Merge -Run $Run
+& "$Skill/scripts/workflow.ps1" -Stage Build -Run $Run
 ```
 
 - `Sync`: merge upstream main into local/fork main; freeze latest upstream nightly's base version and local timestamp.
@@ -26,8 +26,8 @@ Build timeout ≥900000 ms. Logs and retained Docker container name are under th
 
 Read `run.json`; write release notes to `$NotesFile`: upstream nightly tag, timestamp/offset, main/build/customization SHAs, Linux archive SHA256, passed checks, unsigned status, actual installation/update behavior.
 
-```powershell
-pwsh -NoProfile -File "$Skill/scripts/workflow.ps1" -Stage Publish -Run $Run -NotesFile $NotesFile
+```pwsh
+& "$Skill/scripts/workflow.ps1" -Stage Publish -Run $Run -NotesFile $NotesFile
 ```
 
 `Publish`: upload renamed installer + `SHA256SUMS` to a draft fork prerelease; verify downloaded bytes and tag target; publish without marking latest. Existing tag/release: inspect and reconcile matching inputs before resuming publication.
