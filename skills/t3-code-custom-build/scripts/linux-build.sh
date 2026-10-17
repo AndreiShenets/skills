@@ -53,7 +53,7 @@ node --input-type=module -e '
   }
 '
 echo "[$(date +%T)] Linux dependencies (shared store)"
-vp install --frozen-lockfile --ignore-scripts --store-dir /cache/pnpm-store
+vp install --frozen-lockfile --ignore-scripts -- --store-dir /cache/pnpm-store
 echo "[$(date +%T)] Linux executable and resource monitor"
 APP_VERSION="$BUILD_VERSION" node apps/server/scripts/cli.ts build-exe --verbose
 mkdir -p apps/server/dist/client
