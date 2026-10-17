@@ -2,8 +2,6 @@
 name: t3-code-custom-build
 description: Sync T3 Code, merge customizations, build Windows x64 with WSL, and publish an AS Custom release.
 disable-model-invocation: true
-metadata:
-  opencode/autoinvoke: false
 ---
 
 # T3 Code AS Custom
