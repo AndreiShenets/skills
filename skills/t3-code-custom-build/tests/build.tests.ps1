@@ -5,7 +5,7 @@ $Work = Join-Path $Root 'work'
 $Out = Join-Path $Root 'out'
 $Scratch = Join-Path $Root 'scratch'
 New-Item -ItemType Directory -Path $Work, $Out, $Scratch, "$Work/apps/server/dist/client", "$Work/scripts" | Out-Null
-$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; State = 'missing'; BuildSha = '' }
+$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @() }
 $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
 $PreviousDesktopVersion = [Environment]::GetEnvironmentVariable('T3CODE_DESKTOP_VERSION', 'Process')
 
@@ -31,6 +31,10 @@ function docker {
             foreach ($Target in @('/input/source.tar', '/input/build.sh', '/input/client')) {
                 if (!($args | Where-Object { $_ -like "*target=$Target,readonly" })) { throw "Writable input: $Target" }
             }
+            $CacheMount = @($args | Where-Object { $_ -eq 'type=volume,source=t3-as-custom-linux-cache,target=/cache' })
+            if ($CacheMount.Count -ne 1) { throw 'Missing reusable Linux cache volume' }
+            $Mock.CacheMounts += $CacheMount[0]
+            $Mock.SourceMounts += @($args | Where-Object { $_ -like 'type=volume,source=*,target=/build' })
             Set-Content (Join-Path $Out 't3-0.1.1-linux-x64.tar.gz') 'mock archive'
             $Mock.DockerRuns++
             $Mock.State = 'exited'
@@ -42,7 +46,13 @@ function docker {
 }
 
 function vp {
-    if ($args[0] -eq 'install') { $global:LASTEXITCODE = 0; return }
+    if ($args[0] -eq 'install') {
+        $StoreIndex = [array]::IndexOf($args, '--store-dir')
+        if ($StoreIndex -lt 0) { throw 'Windows install has no reusable store' }
+        $Mock.StorePaths += $args[$StoreIndex + 1]
+        $global:LASTEXITCODE = 0
+        return
+    }
     if ($args[0] -eq 'run' -and $args[1] -eq 'build:desktop') {
         if ($env:APP_VERSION -ne '0.1.1') { throw 'Frontend saw inherited APP_VERSION' }
         if ($Mock.FailFrontend) { throw 'simulated frontend failure' }
@@ -114,7 +124,16 @@ try {
     if (!$Failed -or $env:APP_VERSION -ne '9.9.9' -or (Get-Content $Run -Raw | ConvertFrom-Json).Built) {
         throw 'Failed build did not restore environment or clear completion state'
     }
-    Write-Host 'PASS: pinned versions despite environment overrides; environment restoration; isolated inputs; build/resume guards'
+    $Mock.State = 'missing'
+    & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_16_00 -Version 0.1.1 -OutputDir $Out
+    if (@($Mock.CacheMounts | Sort-Object -Unique).Count -ne 1 -or @($Mock.SourceMounts | Sort-Object -Unique).Count -ne 2) {
+        throw 'Different runs must share caches but not source workspaces'
+    }
+    $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work '.git/as-custom/cache/pnpm-store'))
+    if ($Mock.StorePaths.Count -ne 2 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
+        throw 'Windows store was not reused outside the run scratch directory'
+    }
+    Write-Host 'PASS: pinned versions; environment restoration; isolated sources; per-run containers with reusable caches; build/resume guards'
 } finally {
     [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process')
     [Environment]::SetEnvironmentVariable('T3CODE_DESKTOP_VERSION', $PreviousDesktopVersion, 'Process')
