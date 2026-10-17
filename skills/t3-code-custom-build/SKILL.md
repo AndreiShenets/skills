@@ -8,7 +8,10 @@ disable-model-invocation: true
 
 PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded skill's base directory and `$Repo` from the target T3 Code checkout.
 
-**First: check upstream overlap.** Fetch current `pingdotgg/t3code:main` and remote `customizations/*` without merging or pushing. Compare each customization's behavior with upstream, not just commit ancestry. For full or partial overlap, show evidence and ask whether to keep, skip this run, or remove it; wait for the answer before Sync/Merge/Build. Remove branches only with explicit approval. Set `$SkipBranches` to approved per-run exclusions (an empty array otherwise).
+**First: check upstream overlap, before Sync/Merge/Build.**
+1. Fetch current `pingdotgg/t3code:main` and remote `customizations/*` without merging or pushing. For each customization, search upstream issues and PRs, including closed issues and merged PRs, for equivalent fixes/features.
+2. Verify each customization's behavior against current upstream code; use matches to focus the comparison. Closed issues, merged PRs, and commit ancestry alone do not prove equivalence; account for partial implementations and reverts. Open PRs are pending work, not implemented behavior.
+3. Report overlap with issue/PR links where available, code evidence, remaining differences, and a recommendation. For full or partial overlap, ask whether to keep, skip this run, or remove it; wait for the answer before proceeding. Remove branches only with explicit approval. Set `$SkipBranches` to approved per-run exclusions (an empty array otherwise).
 
 Run each stage separately; use the printed `run.json` path as `$Run`. State persists per branch; worktrees and package caches live beside the repository's Git data.
 
