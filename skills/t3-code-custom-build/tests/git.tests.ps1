@@ -45,6 +45,21 @@ try {
         throw 'Temporary worktree was not removed, or borrowed worktree was removed'
     }
 
+    $Run = Join-Path $Scratch 'run.json'
+    $Build = Join-Path $Scratch 'build'
+    @{
+        Repo = $Repo; Scratch = $Scratch; MainSha = $Main
+        Branches = @('customizations/occupied', 'customizations/remote-only')
+        Customizations = @{}; BuildBranch = 'custom_builds/2026_10_17_15_39'; Work = $Build; Merged = $false
+    } | ConvertTo-Json | Set-Content $Run
+    $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
+    & $Workflow -Stage Merge -Run $Run
+    & $Workflow -Stage Merge -Run $Run
+    $Saved = Get-Content $Run -Raw | ConvertFrom-Json -AsHashtable
+    if (!$Saved.Merged -or $Saved.Customizations.Count -ne 2) { throw 'Merge stage did not persist its state' }
+    foreach ($Sha in $Saved.Customizations.Values) { git -C $Build merge-base --is-ancestor $Sha HEAD }
+    Assert-Clean $Build
+
     $Before = (git -C $Occupied rev-parse HEAD).Trim()
     Set-Content (Join-Path $Occupied 'user-work.txt') 'preserve'
     $Blocked = $false
@@ -84,7 +99,7 @@ try {
         $AheadBlocked = $true
     }
     if (!$AheadBlocked -or (git -C $Origin rev-parse main).Trim() -ne $NewMain) { throw 'Ahead-main guard failed' }
-    Write-Host 'PASS: main sync; occupied/remote-only branches; push; cleanup; dirty/conflict/ahead-main guards'
+    Write-Host 'PASS: branch merges; persisted workflow/resume; push; cleanup; dirty/conflict/ahead-main guards'
 } finally {
     # Only this test's newly created fixture is removed.
     Remove-Item -LiteralPath $Root -Recurse -Force
