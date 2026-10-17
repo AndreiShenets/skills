@@ -1,0 +1,5 @@
+interface:
+  display_name: "T3 Code Custom Build"
+  short_description: "Sync, build Windows x64 with WSL, publish AS Custom"
+policy:
+  allow_implicit_invocation: false
