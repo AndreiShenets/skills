@@ -8,7 +8,9 @@ metadata:
 
 # T3 Code AS Custom
 
-Explicit invocation authorizes the workflow below. PowerShell 7; Windows x64; Docker Linux containers. Read repository `AGENTS.md` first. Set `$Skill` to this skill's directory.
+Explicit invocation authorizes the workflow below. PowerShell 7; Windows x64; Docker Linux containers. Read repository `AGENTS.md` first.
+
+Agent initializes `$Skill` from the skill loader's absolute base directory; fallback: parent of the actual loaded `SKILL.md`. Discover it yourself, not via user configuration, a fixed global install path, `$PWD`, or `$PSScriptRoot` in pasted commands. Run in the target T3 Code checkout; `$Repo` and scratch paths are resolved below.
 
 ## Gates
 
@@ -23,12 +25,13 @@ Explicit invocation authorizes the workflow below. PowerShell 7; Windows x64; Do
 ```powershell
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$Repo = 'S:\Projects\t3code'
-$Skill = 'S:\Projects\skills\skills\t3-code-custom-build'
+$Repo = (git rev-parse --show-toplevel).Trim()
+$Skill = (Resolve-Path -LiteralPath $Skill).Path
+if (!(Test-Path -LiteralPath (Join-Path $Skill 'SKILL.md'))) { throw 'Resolve the loaded skill directory first' }
 $Now = Get-Date
 $RunId = $Now.ToString('yyyy_MM_dd_HH_mm')
 $Stamp = $Now.ToString('yyyyMMddHHmm')
-$Scratch = "C:\Temp\opencode\t3-custom-$RunId"
+$Scratch = Join-Path ([System.IO.Path]::GetTempPath()) "t3-custom-$RunId"
 New-Item -ItemType Directory -Path $Scratch | Out-Null
 . "$Skill\scripts\git.ps1"
 Assert-Clean $Repo

@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$Root = Join-Path 'C:/Temp/opencode' ("t3-skill-build-test-" + [guid]::NewGuid().ToString('N'))
+$Root = Join-Path ([System.IO.Path]::GetTempPath()) ("t3-skill-build-test-" + [guid]::NewGuid().ToString('N'))
 $Work = Join-Path $Root 'work'
 $Out = Join-Path $Root 'out'
 $Scratch = Join-Path $Root 'scratch'

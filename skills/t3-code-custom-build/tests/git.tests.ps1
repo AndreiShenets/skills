@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot '../scripts/git.ps1')
-$Root = Join-Path 'C:/Temp/opencode' ("t3-skill-git-test-" + [guid]::NewGuid().ToString('N'))
+$Root = Join-Path ([System.IO.Path]::GetTempPath()) ("t3-skill-git-test-" + [guid]::NewGuid().ToString('N'))
 $Origin = Join-Path $Root 'origin.git'
 $Repo = Join-Path $Root 'repo'
 $Occupied = Join-Path $Root 'occupied'
