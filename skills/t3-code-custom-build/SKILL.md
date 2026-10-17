@@ -8,17 +8,11 @@ metadata:
 
 # T3 Code AS Custom
 
-Explicit invocation authorizes the workflow below. PowerShell 7; Windows x64; Docker Linux containers. Read repository `AGENTS.md` first.
+PowerShell 7; Windows x64; Linux Docker daemon. Run in the target T3 Code checkout.
 
-Agent initializes `$Skill` from the skill loader's absolute base directory; fallback: parent of the actual loaded `SKILL.md`. Discover it yourself, not via user configuration, a fixed global install path, `$PWD`, or `$PSScriptRoot` in pasted commands. Run in the target T3 Code checkout; `$Repo` and scratch paths are resolved below.
+Resolve `$Skill` from the loader's base directory or the loaded `SKILL.md`'s parent. Agent-resolved; no fixed installation path.
 
-## Gates
-
-- Preserve installation identity/updater from the merged code. Until a customization changes them: replacement installation, official updater, unsigned.
-- Stop on any failed command. Resolve merge conflicts preserving both intents; commit, validate affected code, then resume. Ask on semantic ambiguity. Never force-push/reset or discard user changes.
-- Borrow only clean existing branch worktrees. Separate build worktree; separate Linux dependencies. No live T3 home, installer execution, browser/UI testing, secrets, or `.env` copies.
-- Use current build scripts; inspect upstream changes to them before executing. Node 26 worked; Windows need not be downgraded solely for the Node 24 engine warning. Linux SEA Node comes from `SEA_NODE_VERSION`, not an assumed version.
-- Long builds: foreground timeout ≥900000 ms, or tracked background execution. After timeout inspect captured process/container before retrying; never duplicate an active build.
+Build command timeout: ≥900000 ms. After timeout, check the captured process/container before retrying.
 
 ## 1. Freeze inputs; sync fork/main
 
@@ -78,7 +72,7 @@ git -C $Work merge-base --is-ancestor $MainSha HEAD
 git -C $Work push --set-upstream origin $BuildBranch
 ```
 
-Bind the current harness session to `$Work` when supported. On conflicts, leave the affected worktree intact; finish that merge before continuing the loop. Verify every frozen customization SHA is an ancestor of the final build commit.
+Conflicts: resolve, commit, validate affected code, then continue remaining branches. Helpers leave failed merges intact.
 
 ## 3. Stamp, commit, build
 
@@ -96,8 +90,6 @@ try {
   git push origin $BuildBranch
   Assert-Clean $Work
   $BuildSha = (git rev-parse HEAD).Trim()
-  vp test run scripts/update-release-package-versions.test.ts
-  # Also run focused tests/lint/typechecks for conflict resolutions; no repo-wide checks.
   vp run build:desktop
   node scripts/apply-web-brand-assets.ts production apps/server/dist/client
 } finally { Pop-Location }
@@ -105,9 +97,9 @@ $Out = Join-Path $Repo "release/as-custom/$RunId"
 & "$Skill\scripts\build-with-wsl.ps1" -Worktree $Work -Scratch $Scratch -RunId $RunId -Version $Version -OutputDir $Out
 ```
 
-Helper: native Linux x64 build from `git archive $BuildSha`, matching Windows client assets, Linux resource monitor, CLI archive smoke test, then Windows NSIS with `--wsl-runtime`. It preserves Docker resources on failure. Logs go to `$Scratch`; inspect/resume the exact container, not a duplicate.
+Logs: `$Scratch/linux-build.log`, `$Scratch/windows-build.log`. Failed Linux container is retained; helper resumes it on retry.
 
-If Windows prerequisite checks fail, inspect `docs/operations/development.md#windows-installer-prerequisites`. Require Rust/MSVC target, Python, SDK, C++ and Spectre libs. Ask before installing host tools. VS 2026 passes preflight; if a native rebuild is forced to VS 2022, inspect the current builder/node-gyp before applying a process-local override.
+Prerequisite failure: `docs/operations/development.md#windows-installer-prerequisites`. Host Node 26 worked. Helper derives Linux SEA Node from source. With VS 2026-only hosts, check the builder's VS 2022 override if native rebuilding fails.
 
 ## 4. Verify; publish only to the fork
 
@@ -135,10 +127,8 @@ $LinuxSha = (Get-FileHash (Join-Path $Out $LinuxName) -Algorithm SHA256).Hash.To
 $Tag = "as-custom-v$Version-$Stamp"
 $Title = "T3 Code AS Custom $Version $Stamp ($MainShort)"
 $Notes = Join-Path $Scratch 'release-notes.md'
-# Write via the file-edit tool: attribution using current model/user, upstream nightly tag,
-# local timestamp+UTC offset, full main/build/customization SHAs, Linux SHA256,
-# tests actually passed, unsigned status, current installer-identity/updater behavior.
-# Do not claim side-by-side isolation unless the merged customization implements it.
+# Write notes: upstream nightly tag, local timestamp+UTC offset, full main/build/customization
+# SHAs, Linux SHA256, validation results, unsigned status, actual installation/update behavior.
 if (!(Test-Path $Notes)) { throw 'Write release-notes.md first' }
 git -C $Work tag -a $Tag $BuildSha -m $Title
 git -C $Work push origin "refs/tags/$Tag"
@@ -159,8 +149,6 @@ gh release view $Tag --repo AndreiShenets/t3code --json url,isDraft,isPrerelease
 git -C $Work status --short --branch
 ```
 
-On retry: inspect existing branch/tag/release; reuse only exact matching SHAs/assets. Never retarget tags or overwrite a published asset silently. Custom tag prefix avoids upstream `v*` release triggers. No PR is part of this build workflow.
+Retry: reuse existing branch/tag/release only for matching SHAs/assets. Custom tag prefix avoids upstream `v*` release triggers.
 
-Report release URL, installer path/name, version, main/build SHAs, checks, installation/update caveats, **pushed**, **worktree is clean**. Register PRs only if separately requested; do not create one for a build.
-
-Skill maintenance checks: `pwsh -NoProfile -File tests/git.tests.ps1`; `pwsh -NoProfile -File tests/build.tests.ps1`; `bash -n scripts/linux-build.sh`; `bash -n scripts/wsl-smoke.sh`. Tests use local fixtures/mocks; they never sync the real fork or publish a release.
+Report release URL, installer path/name, version, main/build SHAs, validation results, installation/update caveats.
