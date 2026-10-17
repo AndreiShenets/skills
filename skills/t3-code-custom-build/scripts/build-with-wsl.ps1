@@ -56,7 +56,7 @@ if ((git -C $Worktree rev-parse HEAD).Trim() -ne $BuildSha) { throw 'Source chan
 Assert-Clean $Worktree
 Push-Location $Worktree
 try {
-    vp run dist:desktop:win:x64 --skip-build --wsl-runtime $Archive --output-dir $OutputDir 2>&1 |
+    vp run dist:desktop:win:x64 --skip-build --build-version $Version --wsl-runtime $Archive --output-dir $OutputDir 2>&1 |
         Tee-Object (Join-Path $Scratch 'windows-build.log')
     if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
 } finally { Pop-Location }

@@ -6,6 +6,13 @@ function Assert-Clean {
     if (git -C $Path status --porcelain) { throw "Dirty worktree: $Path" }
 }
 
+function Get-RemoteCustomizationBranches {
+    param([Parameter(Mandatory)][string]$Repo)
+    git -C $Repo fetch origin --prune '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/customizations/*:refs/remotes/origin/customizations/*' | Out-Host
+    @(git -C $Repo for-each-ref '--format=%(refname)' refs/remotes/origin/customizations/ |
+        ForEach-Object { $_ -replace '^refs/remotes/origin/', '' } | Sort-Object -Unique)
+}
+
 function Merge-TrackedBranch {
     param(
         [Parameter(Mandatory)][string]$Repo,

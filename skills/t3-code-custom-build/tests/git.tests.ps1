@@ -45,11 +45,25 @@ try {
         throw 'Temporary worktree was not removed, or borrowed worktree was removed'
     }
 
+    git -C $Repo branch customizations/deleted
+    git -C $Repo push origin customizations/deleted | Out-Null
+    git -C $Origin update-ref -d refs/heads/customizations/deleted
+    $LocalOnlySha = ('local-only customization' | git -C $Repo commit-tree 'HEAD^{tree}' -p HEAD).Trim()
+    $DeletedSha = ('deleted customization' | git -C $Repo commit-tree 'HEAD^{tree}' -p HEAD).Trim()
+    git -C $Repo update-ref refs/heads/customizations/local-only $LocalOnlySha
+    git -C $Repo update-ref refs/heads/customizations/deleted $DeletedSha
+    git -C $Repo update-ref -d refs/remotes/origin/customizations/remote-only
+    git -C $Repo config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
+    $Inventory = @(Get-RemoteCustomizationBranches -Repo $Repo)
+    if (@(Compare-Object $Inventory @('customizations/occupied', 'customizations/remote-only')).Count) {
+        throw 'Remote discovery missed a branch or included a local-only/deleted branch'
+    }
+
     $Run = Join-Path $Scratch 'run.json'
     $Build = Join-Path $Scratch 'build'
     @{
         Repo = $Repo; Scratch = $Scratch; MainSha = $Main
-        Branches = @('customizations/occupied', 'customizations/remote-only')
+        Branches = @('customizations/occupied', 'customizations/local-only', 'customizations/deleted')
         Customizations = @{}; BuildBranch = 'custom_builds/2026_10_17_15_39'; Work = $Build; Merged = $false
     } | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
@@ -58,6 +72,11 @@ try {
     $Saved = Get-Content $Run -Raw | ConvertFrom-Json -AsHashtable
     if (!$Saved.Merged -or $Saved.Customizations.Count -ne 2) { throw 'Merge stage did not persist its state' }
     foreach ($Sha in $Saved.Customizations.Values) { git -C $Build merge-base --is-ancestor $Sha HEAD }
+    $History = @(git -C $Build rev-list HEAD)
+    if ($History -contains $LocalOnlySha -or $History -contains $DeletedSha) { throw 'Local-only/deleted customization was merged' }
+    if (@(git -C $Repo for-each-ref '--format=%(refname)' refs/heads/customizations/local-only refs/heads/customizations/deleted).Count -ne 2) {
+        throw 'Excluded local branches were deleted'
+    }
     Assert-Clean $Build
 
     $Before = (git -C $Occupied rev-parse HEAD).Trim()
@@ -99,7 +118,7 @@ try {
         $AheadBlocked = $true
     }
     if (!$AheadBlocked -or (git -C $Origin rev-parse main).Trim() -ne $NewMain) { throw 'Ahead-main guard failed' }
-    Write-Host 'PASS: branch merges; persisted workflow/resume; push; cleanup; dirty/conflict/ahead-main guards'
+    Write-Host 'PASS: restricted-fetch remote inventory; local-only/deleted exclusion; merge/resume; push; failure guards'
 } finally {
     # Only this test's newly created fixture is removed.
     Remove-Item -LiteralPath $Root -Recurse -Force

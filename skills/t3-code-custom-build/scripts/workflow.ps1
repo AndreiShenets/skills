@@ -41,8 +41,8 @@ switch ($Stage) {
     Sync {
         if ($State.MainSha) { Write-Host 'Sync already complete'; break }
         gh auth status
-        docker version --format '{{.Server.Os}}/{{.Server.Arch}}'
-        Get-Command git, gh, vp, node, cargo, rustc, python | Select-Object Name, Source
+        $State.Branches = @(Get-RemoteCustomizationBranches -Repo $State.Repo)
+        if (!$State.Branches.Count) { throw 'No remote customizations/* branches found' }
         if (!$State.UpstreamSha) {
             $Nightly = gh release list --repo pingdotgg/t3code --limit 100 --json tagName,publishedAt,isPrerelease |
                 ConvertFrom-Json | Where-Object { $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+-nightly\.' } |
@@ -50,21 +50,24 @@ switch ($Stage) {
             if (!$Nightly) { throw 'No upstream nightly found' }
             $State.NightlyTag = $Nightly.tagName
             $State.Version = [regex]::Match($Nightly.tagName, '^v(\d+\.\d+\.\d+)-nightly\.').Groups[1].Value
-            git -C $State.Repo fetch origin --prune
             git -C $State.Repo fetch https://github.com/pingdotgg/t3code.git main
             $State.UpstreamSha = (git -C $State.Repo rev-parse FETCH_HEAD).Trim()
             Save-Run
         }
         Merge-TrackedBranch -Repo $State.Repo -Branch main -MergeRef $State.UpstreamSha -Scratch $State.Scratch
         $State.MainSha = (git -C $State.Repo rev-parse main).Trim()
-        $State.Branches = @(git -C $State.Repo for-each-ref '--format=%(refname)' refs/heads/customizations/ refs/remotes/origin/customizations/ |
-            ForEach-Object { $_ -replace '^refs/(heads/|remotes/origin/)', '' } | Sort-Object -Unique)
-        if (!$State.Branches.Count) { throw 'No customizations/* branches found' }
         Save-Run
     }
     Merge {
         if (!$State.MainSha) { throw 'Complete Sync first' }
         if ($State.Merged) { Write-Host 'Merge already complete'; break }
+        $RemoteBranches = @(Get-RemoteCustomizationBranches -Repo $State.Repo)
+        if (!$RemoteBranches.Count) { throw 'No remote customizations/* branches found' }
+        if ($State.Customizations.Count -and @(Compare-Object @($State.Customizations.Keys) $RemoteBranches).Count) {
+            throw 'Remote customization inventory changed during merging; start a new run'
+        }
+        $State.Branches = $RemoteBranches
+        Save-Run
         if (!$State.Customizations.Count) {
             foreach ($Branch in $State.Branches) {
                 Merge-TrackedBranch -Repo $State.Repo -Branch $Branch -MergeRef $State.MainSha -Scratch $State.Scratch
@@ -108,8 +111,12 @@ switch ($Stage) {
             Assert-Clean $State.Work
             $State.BuildSha = (git rev-parse HEAD).Trim()
             Save-Run
-            vp run build:desktop
-            node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+            $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
+            try {
+                $env:APP_VERSION = $State.Version
+                vp run build:desktop
+                node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+            } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
         } finally { Pop-Location }
         & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out
         if ($WslDistro) {
@@ -129,32 +136,8 @@ switch ($Stage) {
         if (!$NotesFile -or !(Test-Path -LiteralPath $NotesFile)) { throw 'Supply -NotesFile <release-notes.md>' }
         Assert-Clean $State.Work
         if ((git -C $State.Work rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed after build' }
-        $AssetName = "T3-Code-AS-Custom-$($State.Version)-$($State.Stamp)-x64.exe"
-        $Installer = Join-Path $State.Out $AssetName
-        Copy-Item (Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe") $Installer
-        $Checksums = Join-Path $State.Out 'SHA256SUMS'
-        $ExeSha = (Get-FileHash $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$ExeSha  $AssetName" | Set-Content $Checksums -Encoding utf8NoBOM
-        $Tag = "as-custom-v$($State.Version)-$($State.Stamp)"
-        $Title = "T3 Code AS Custom $($State.Version) $($State.Stamp) ($($State.MainSha.Substring(0, 12)))"
-        git -C $State.Work tag -a $Tag $State.BuildSha -m $Title
-        git -C $State.Work push origin "refs/tags/$Tag"
-        gh release create $Tag $Installer $Checksums --repo AndreiShenets/t3code --verify-tag --title $Title --notes-file $NotesFile --draft --prerelease --latest=false
-        $Release = gh release view $Tag --repo AndreiShenets/t3code --json url,isDraft,isPrerelease,assets | ConvertFrom-Json
-        if (!$Release.isDraft -or !$Release.isPrerelease) { throw 'Unexpected release state' }
-        $Asset = @($Release.assets | Where-Object { $_.name -ceq $AssetName })
-        if ($Asset.Count -ne 1 -or $Asset[0].size -ne (Get-Item $Installer).Length) { throw 'Installer asset mismatch' }
-        $Verify = Join-Path $State.Scratch 'download-verification'
-        gh release download $Tag --repo AndreiShenets/t3code --dir $Verify --pattern $AssetName --pattern SHA256SUMS
-        if ((Get-FileHash (Join-Path $Verify $AssetName) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $ExeSha) { throw 'Uploaded installer checksum mismatch' }
-        if ((Get-Content (Join-Path $Verify 'SHA256SUMS') -Raw).Trim() -cne "$ExeSha  $AssetName") { throw 'Uploaded checksum file mismatch' }
-        $RemoteTag = ((git -C $State.Work ls-remote origin "refs/tags/$Tag^{}") -split '\s+')[0]
-        if ($RemoteTag -ne $State.BuildSha) { throw 'Remote tag target mismatch' }
-        git -C $State.Work merge-base --is-ancestor $State.MainSha $State.BuildSha
-        gh release edit $Tag --repo AndreiShenets/t3code --draft=false --prerelease --latest=false
-        $Release = gh release view $Tag --repo AndreiShenets/t3code --json url,isDraft,isPrerelease,assets | ConvertFrom-Json
-        if ($Release.isDraft -or !$Release.isPrerelease) { throw 'Publication state mismatch' }
-        $State.ReleaseUrl = $Release.url
+        . (Join-Path $PSScriptRoot 'publish.ps1')
+        $State.ReleaseUrl = Publish-CustomRelease -State $State -NotesFile $NotesFile
         Save-Run
         Write-Host $State.ReleaseUrl
     }
