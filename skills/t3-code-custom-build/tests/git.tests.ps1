@@ -58,12 +58,16 @@ try {
     if (@(Compare-Object $Inventory @('customizations/occupied', 'customizations/remote-only')).Count) {
         throw 'Remote discovery missed a branch or included a local-only/deleted branch'
     }
+    $SkippedSha = ('already upstream customization' | git -C $Repo commit-tree 'HEAD^{tree}' -p HEAD).Trim()
+    git -C $Repo update-ref refs/heads/customizations/skipped $SkippedSha
+    git -C $Repo push origin customizations/skipped | Out-Null
 
     $Run = Join-Path $Scratch 'run.json'
     $Build = Join-Path $Scratch 'build'
     @{
         Repo = $Repo; Scratch = $Scratch; MainSha = $Main
         Branches = @('customizations/occupied', 'customizations/local-only', 'customizations/deleted')
+        SkippedBranches = @('customizations/skipped')
         Customizations = @{}; BuildBranch = 'custom_builds/2026_10_17_15_39'; Work = $Build; Merged = $false
     } | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
@@ -74,6 +78,16 @@ try {
     foreach ($Sha in $Saved.Customizations.Values) { git -C $Build merge-base --is-ancestor $Sha HEAD }
     $History = @(git -C $Build rev-list HEAD)
     if ($History -contains $LocalOnlySha -or $History -contains $DeletedSha) { throw 'Local-only/deleted customization was merged' }
+    if ($History -contains $SkippedSha -or $Saved.Customizations.Contains('customizations/skipped')) { throw 'Approved per-run skip was integrated' }
+    if ($Saved.SkippedBranches.Count -ne 1 -or $Saved.SkippedBranches[0] -cne 'customizations/skipped') { throw 'Approved skip was not persisted' }
+    if ((git -C $Origin rev-parse refs/heads/customizations/skipped).Trim() -ne $SkippedSha -or
+        (git -C $Repo rev-parse refs/heads/customizations/skipped).Trim() -ne $SkippedSha) { throw 'Skipped branch was changed or removed' }
+    $LateSkipBlocked = $false
+    try { & $Workflow -Stage Merge -Run $Run -SkipBranches customizations/occupied } catch {
+        if ($_.Exception.Message -notlike 'Choose SkipBranches when starting Sync*') { throw }
+        $LateSkipBlocked = $true
+    }
+    if (!$LateSkipBlocked) { throw 'Existing run selection could be changed after integration' }
     if (@(git -C $Repo for-each-ref '--format=%(refname)' refs/heads/customizations/local-only refs/heads/customizations/deleted).Count -ne 2) {
         throw 'Excluded local branches were deleted'
     }
@@ -118,7 +132,7 @@ try {
         $AheadBlocked = $true
     }
     if (!$AheadBlocked -or (git -C $Origin rev-parse main).Trim() -ne $NewMain) { throw 'Ahead-main guard failed' }
-    Write-Host 'PASS: restricted-fetch remote inventory; local-only/deleted exclusion; merge/resume; push; failure guards'
+    Write-Host 'PASS: remote-only inventory; approved skips persist without changing branches; frozen selection; merge/resume; failure guards'
 } finally {
     # Only this test's newly created fixture is removed.
     Remove-Item -LiteralPath $Root -Recurse -Force

@@ -3,12 +3,16 @@ param(
     [string]$Repo,
     [string]$Run,
     [string]$NotesFile,
-    [string]$WslDistro
+    [string]$WslDistro,
+    [ValidatePattern('^customizations/.+')][string[]]$SkipBranches = @()
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'git.ps1')
 . (Join-Path $PSScriptRoot 'progress.ps1')
+if ($PSBoundParameters.ContainsKey('SkipBranches') -and ($Stage -ne 'Sync' -or $Run)) {
+    throw 'Choose SkipBranches when starting Sync; existing runs keep their saved selection'
+}
 
 function Save-Run {
     $Temporary = "$Run.tmp"
@@ -30,7 +34,8 @@ if (!$Run) {
     $State = [ordered]@{
         Repo = $Repo; Scratch = $Scratch; RunId = $RunId; Stamp = $Now.ToString('yyyyMMddHHmm')
         Timestamp = $Now.ToString('o'); NightlyTag = ''; Version = ''; UpstreamSha = ''; MainSha = ''
-        Branches = @(); Customizations = [ordered]@{}; Integrated = [ordered]@{}; BuildBranch = "custom_builds/$RunId"
+        Branches = @(); SkippedBranches = @($SkipBranches | Sort-Object -Unique)
+        Customizations = [ordered]@{}; Integrated = [ordered]@{}; BuildBranch = "custom_builds/$RunId"
         Work = (Join-Path $Scratch 'build'); Out = (Join-Path $Repo "release/as-custom/$RunId")
         BuildSha = ''; Merged = $false; Built = $false; WslSmoke = $false; ReleaseUrl = ''; Cache = $Cache
     }
@@ -44,6 +49,7 @@ catch { throw "Run is already active or cannot be locked: $Run" }
 try {
     $State = Get-Content -LiteralPath $Run -Raw | ConvertFrom-Json -AsHashtable
     if (!$State.Contains('Integrated')) { $State.Integrated = [ordered]@{} }
+    if (!$State.Contains('SkippedBranches')) { $State.SkippedBranches = @() }
     if (!$State.Cache) { $State.Cache = Get-BuildCacheDirectory -Worktree $(if ($State.Repo) { $State.Repo } else { $State.Work }) }
 
     Invoke-BuildStep -Label $Stage -Action { switch ($Stage) {
@@ -51,8 +57,13 @@ try {
         Complete-PendingMerge -Scratch $State.Scratch
         if ($State.MainSha) { Write-Host 'Sync already complete'; break }
         gh auth status
-        $State.Branches = @(Get-RemoteCustomizationBranches -Repo $State.Repo)
-        if (!$State.Branches.Count) { throw 'No remote customizations/* branches found' }
+        $RemoteBranches = @(Get-RemoteCustomizationBranches -Repo $State.Repo)
+        if (!$RemoteBranches.Count) { throw 'No remote customizations/* branches found' }
+        foreach ($Branch in $State.SkippedBranches) {
+            if ($Branch -cnotin $RemoteBranches) { throw "Skipped branch does not exist on origin: $Branch" }
+        }
+        $State.Branches = @($RemoteBranches | Where-Object { $_ -cnotin $State.SkippedBranches })
+        if (!$State.Branches.Count) { throw 'All remote customizations are skipped; no custom build to create' }
         if (!$State.UpstreamSha) {
             $Nightly = gh release list --repo pingdotgg/t3code --limit 100 --json tagName,publishedAt,isPrerelease |
                 ConvertFrom-Json | Where-Object { $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+-nightly\.' } |
@@ -72,8 +83,8 @@ try {
         if (!$State.MainSha) { throw 'Complete Sync first' }
         if ($State.Merged) { Write-Host 'Merge already complete'; break }
         Complete-PendingMerge -Scratch $State.Scratch
-        $RemoteBranches = @(Get-RemoteCustomizationBranches -Repo $State.Repo)
-        if (!$RemoteBranches.Count) { throw 'No remote customizations/* branches found' }
+        $RemoteBranches = @(Get-RemoteCustomizationBranches -Repo $State.Repo | Where-Object { $_ -cnotin $State.SkippedBranches })
+        if (!$RemoteBranches.Count) { throw 'No selected remote customizations/* branches found' }
         if ($State.Customizations.Count -and @(Compare-Object @($State.Branches) $RemoteBranches).Count) {
             throw 'Remote customization inventory changed during merging; start a new run'
         }
