@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded skill's base directory and `$Repo` from the target T3 Code checkout.
 
-Run each stage separately; use the printed `run.json` path as `$Run`. State persists across shell calls.
+Run each stage separately; use the printed `run.json` path as `$Run`. State persists per branch; worktrees and package caches live beside the repository's Git data.
 
 ```pwsh
 & "$Skill/scripts/workflow.ps1" -Stage Sync -Repo $Repo
@@ -20,9 +20,9 @@ Run each stage separately; use the printed `run.json` path as `$Run`. State pers
 - `Merge`: fetch every remote `customizations/*` locally, update with main, merge into `custom_builds/yyyy_MM_dd_HH_mm`; push. Exclude local-only/deleted remote branches.
 - `Build`: stamp matching versions, build Windows/client and Linux x64 runtime, smoke-test Linux, bundle WSL into NSIS. Optional native WSL check: add `-WslDistro <installed-distro>`.
 
-Conflicts are agent work: resolve and commit in the printed worktree, validate affected code, then rerun the failed stage automatically. Do not hand conflicts back to the user. Preserve divergent history; no force-push.
+Conflicts are agent work: resolve and stage in the printed worktree, then rerun the failed stage automatically; it commits using recorded merge parents without repository hooks. Format only resolved files; validate affected code in the integrated build worktree instead of installing dependencies in disposable merge worktrees. Do not hand conflicts back to the user. Preserve divergent history; no force-push.
 
-Build timeout ≥900000 ms. Logs and retained Docker container name are under the run's scratch directory. Check active processes/container before retrying `Build`.
+Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs and retained Docker container name are under the run's scratch directory; Linux tools/package/Cargo caches use the reusable `t3-as-custom-linux-cache` volume. Check active processes/container before retrying `Build`.
 
 Read `run.json`; write release notes to `$NotesFile`: upstream nightly tag, timestamp/offset, main/build/customization SHAs, Linux archive SHA256, passed checks, unsigned status, actual installation/update behavior.
 

@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'git.ps1')
+. (Join-Path $PSScriptRoot 'progress.ps1')
 Assert-Clean $Worktree
 $BuildSha = (git -C $Worktree rev-parse HEAD).Trim()
 $SourceTar = Join-Path $Scratch "source-$BuildSha.tar"
@@ -37,28 +38,36 @@ if ($Existing) {
     if ($ContainerEnv -notcontains "BUILD_SHA=$BuildSha" -or $ContainerEnv -notcontains "BUILD_VERSION=$Version") {
         throw 'Existing container belongs to different build inputs; choose a new run ID'
     }
-    docker start --attach $Name 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
+    Invoke-BuildStep -Label 'Linux runtime (resume cached container)' -Action {
+        docker start --attach $Name 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Linux container failed' }
+    }
 } else {
-    docker run --name $Name --platform linux/amd64 `
+    Invoke-BuildStep -Label 'Linux runtime (shared tools, package and Cargo caches)' -Action {
+        docker run --name $Name --platform linux/amd64 `
         --env "BUILD_VERSION=$Version" --env "BUILD_SHA=$BuildSha" `
         --env "SEA_NODE_VERSION=$SeaNode" --env "VITE_PLUS_VERSION=$VpVersion" `
         --mount "type=volume,source=$Name,target=/build" `
+        --mount 'type=volume,source=t3-as-custom-linux-cache,target=/cache' `
         --mount "type=bind,source=$SourceTar,target=/input/source.tar,readonly" `
         --mount "type=bind,source=$LinuxScript,target=/input/build.sh,readonly" `
         --mount "type=bind,source=$Client,target=/input/client,readonly" `
         --mount "type=bind,source=$OutputDir,target=/out" `
         rust:bookworm bash /input/build.sh 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Linux container failed' }
+    }
 }
-if ($LASTEXITCODE -ne 0) { throw "Linux build failed; inspect docker logs $Name" }
 $Archive = Join-Path $OutputDir "t3-$Version-linux-x64.tar.gz"
 if (!(Test-Path $Archive)) { throw 'Linux archive missing' }
 if ((git -C $Worktree rev-parse HEAD).Trim() -ne $BuildSha) { throw 'Source changed during Linux build' }
 Assert-Clean $Worktree
 Push-Location $Worktree
 try {
-    vp run dist:desktop:win:x64 --skip-build --build-version $Version --wsl-runtime $Archive --output-dir $OutputDir 2>&1 |
-        Tee-Object (Join-Path $Scratch 'windows-build.log')
-    if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+    Invoke-BuildStep -Label 'Windows NSIS packaging and payload validation' -Action {
+        vp run dist:desktop:win:x64 --skip-build --build-version $Version --wsl-runtime $Archive --output-dir $OutputDir 2>&1 |
+            Tee-Object (Join-Path $Scratch 'windows-build.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+    }
 } finally { Pop-Location }
 if (!(Test-Path (Join-Path $OutputDir "T3-Code-$Version-x64.exe"))) { throw 'Installer missing' }
 Assert-Clean $Worktree
