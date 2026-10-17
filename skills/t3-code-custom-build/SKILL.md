@@ -9,9 +9,10 @@ disable-model-invocation: true
 PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded skill's base directory and `$Repo` from the target T3 Code checkout.
 
 **First: check upstream overlap, before Sync/Merge/Build.**
-1. Fetch current `pingdotgg/t3code:main` and remote `customizations/*` without merging or pushing. For each customization, search upstream issues and PRs, including closed issues and merged PRs, for equivalent fixes/features.
-2. Verify each customization's behavior against current upstream code; use matches to focus the comparison. Closed issues, merged PRs, and commit ancestry alone do not prove equivalence; account for partial implementations and reverts. Open PRs are pending work, not implemented behavior.
-3. Report overlap with issue/PR links where available, code evidence, remaining differences, and a recommendation. For full or partial overlap, ask whether to keep, skip this run, or remove it; wait for the answer before proceeding. Remove branches only with explicit approval. Set `$SkipBranches` to approved per-run exclusions (an empty array otherwise).
+1. Fetch current `pingdotgg/t3code:main`, upstream release tags, and remote `customizations/*` without merging or pushing. For each customization, search merged upstream PRs and published releases (including nightlies) for equivalent fixes/features. Consider issues only as pointers to merged, released implementations; exclude open PRs and closed-unmerged PRs from the overlap check and report.
+2. Count a customization as fully replaced only when merged upstream code covers all its required behavior, is included in a published upstream release, and remains present in current upstream main. Verify code and release inclusion; issue closure, PR merge status, and commit ancestry alone do not prove equivalence. Account for partial implementations and reverts.
+3. Keep customizations with partial, absent, unreleased, or unverified coverage automatically; save findings for the final report and continue without requesting confirmation. If none are fully replaced, proceed directly to Sync/Merge/Build without an interim overlap report.
+4. Only for fully replaced customizations, report merged PR/release links and code evidence, then ask whether to keep, skip this run, or remove them; wait for the answer before proceeding. Remove branches only with explicit approval. Set `$SkipBranches` to approved per-run exclusions (an empty array otherwise).
 
 Run each stage separately; use the printed `run.json` path as `$Run`. State persists per branch; worktrees and package caches live beside the repository's Git data.
 
@@ -37,4 +38,4 @@ Read `run.json`; write release notes to `$NotesFile`: upstream nightly tag, time
 
 `Publish`: upload renamed installer + `SHA256SUMS` to a draft fork prerelease; verify downloaded bytes and tag target; publish without marking latest. Retry the same command to resume matching tags/releases; mismatched inputs stop publication.
 
-Report release URL, installer path, version, main/build SHAs, checks, installation/update caveats.
+Report release URL, installer path, version, main/build SHAs, checks, installation/update caveats. Include the saved overlap findings here, once the build is prepared and publication is complete: merged, released partial implementations may be mentioned with links and remaining differences; they do not require confirmation.
