@@ -140,7 +140,7 @@ try {
         Push-Location $State.Work
         try {
             Invoke-BuildStep -Label 'Windows dependencies (shared store)' -Action {
-                vp install --frozen-lockfile --store-dir (Join-Path $State.Cache 'pnpm-store')
+                vp install --frozen-lockfile -- --store-dir (Join-Path $State.Cache 'pnpm-store')
             }
             node scripts/update-release-package-versions.ts $State.Version
             $Manifests = @('apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json')

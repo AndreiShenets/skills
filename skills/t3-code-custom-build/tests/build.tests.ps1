@@ -49,6 +49,10 @@ function vp {
     if ($args[0] -eq 'install') {
         $StoreIndex = [array]::IndexOf($args, '--store-dir')
         if ($StoreIndex -lt 0) { throw 'Windows install has no reusable store' }
+        # PowerShell consumes the separator for this function mock, unlike native vp.
+        if ($MyInvocation.Line -notmatch '\s--\s+--store-dir(?:\s|$)') {
+            throw 'Package-manager options must follow the vp pass-through separator'
+        }
         $Mock.StorePaths += $args[$StoreIndex + 1]
         $global:LASTEXITCODE = 0
         return
