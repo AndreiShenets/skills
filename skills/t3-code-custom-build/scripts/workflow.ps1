@@ -37,7 +37,8 @@ if (!$Run) {
         Timestamp = $Now.ToString('o'); NightlyTag = ''; Version = ''; UpstreamSha = ''; MainSha = ''
         Branches = @(); SkippedBranches = @($SkipBranches | Sort-Object -Unique)
         Customizations = [ordered]@{}; Integrated = [ordered]@{}; BuildBranch = "custom_builds/$RunId"
-        Work = (Join-Path $Scratch 'build'); Out = (Join-Path $Repo "release/as-custom/$RunId")
+        Work = (Get-BuildWorktreeDirectory -Worktree $Repo -RunName (Split-Path $Scratch -Leaf))
+        Out = (Join-Path $Repo "release/as-custom/$RunId")
         BuildSha = ''; PreflightSha = ''; Merged = $false; Built = $false; WslSmoke = $false; ReleaseUrl = ''; Cache = $Cache
     }
     Save-Run
@@ -51,6 +52,7 @@ try {
     $State = Get-Content -LiteralPath $Run -Raw | ConvertFrom-Json -AsHashtable
     if (!$State.Contains('Integrated')) { $State.Integrated = [ordered]@{} }
     if (!$State.Contains('SkippedBranches')) { $State.SkippedBranches = @() }
+    if ($Stage -in @('Merge', 'Build')) { Assert-BuildWorktreeLocation -Path $State.Work }
     if (!$State.Cache) { $State.Cache = Get-BuildCacheDirectory -Worktree $(if ($State.Repo) { $State.Repo } else { $State.Work }) }
 
     Invoke-BuildStep -Label $Stage -Action { switch ($Stage) {

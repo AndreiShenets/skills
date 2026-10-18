@@ -128,6 +128,16 @@ try {
         MainSha = $MainSha
     } | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
+    $RunBeforeGuard = Get-Content $Run -Raw
+    $UnsafeRun = $RunBeforeGuard | ConvertFrom-Json -AsHashtable
+    $UnsafeRun.Work = Join-Path $Work '.git/as-custom/build'
+    $UnsafeRun | ConvertTo-Json | Set-Content $Run
+    $LocationBlocked = $false
+    try { & $Workflow -Stage Build -Run $Run } catch {
+        if ($_.Exception.Message -notlike 'Build worktrees must be outside .git*') { throw }
+        $LocationBlocked = $true
+    } finally { Set-Content $Run $RunBeforeGuard }
+    if (!$LocationBlocked -or $Mock.StorePaths.Count -or $Mock.FrontendRuns) { throw 'Unsafe worktree reached dependency installation or compilation' }
     & $Workflow -Stage Build -Run $Run
     if ($Mock.FrontendRuns -ne 1 -or $Mock.PackagingRuns -ne 3) { throw 'Build stage did not complete' }
     if ($env:APP_VERSION -ne '9.9.9' -or $env:T3CODE_DESKTOP_VERSION -ne '9.9.9') { throw 'Build changed caller environment' }
@@ -162,7 +172,7 @@ try {
     if ($Mock.StorePaths.Count -ne 3 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }
-    Write-Host 'PASS: pinned versions; environment restoration; isolated sources; per-run containers with reusable caches; build/resume guards'
+    Write-Host 'PASS: Git-directory guard before installation; pinned versions; environment restoration; isolated sources; reusable caches; build/resume guards'
 } finally {
     [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process')
     [Environment]::SetEnvironmentVariable('T3CODE_DESKTOP_VERSION', $PreviousDesktopVersion, 'Process')

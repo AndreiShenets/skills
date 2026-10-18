@@ -28,6 +28,9 @@ try {
     Set-Content "$Work/apps/web/src/deleted.test.ts" 'old test'
     Set-Content "$Work/apps/web/src/existing.test.ts" 'existing test'
     Set-Content "$Work/apps/web/src/unchanged.test.ts" 'unrelated test'
+    Set-Content "$Work/apps/web/src/existing.browser.test.tsx" 'unchanged browser sibling'
+    Set-Content "$Work/apps/web/src/existing.live.spec.ts" 'unchanged live sibling'
+    Set-Content "$Work/apps/web/src/unchanged.browser.test.tsx" 'unrelated browser test'
     Set-Content "$Work/scripts/tsconfig.json" '{}'
     git -C $Work add .
     git -C $Work commit -m baseline | Out-Null
@@ -57,9 +60,18 @@ try {
     if ($Test -notcontains 'apps/web/src/new file.test.ts' -or $Test -notcontains 'apps/web/src/existing.test.ts') { throw 'Missing changed/sibling test' }
     if (@($Test | Where-Object { $_ -match 'browser|live|deleted|unchanged' }).Count) { throw 'Unsafe or unrelated test selected' }
     if ((Get-Content $Log -Raw) -notmatch 'Manual verification not run.*authorized.browser.test.tsx') { throw 'Missing manual-test report' }
+    foreach ($Sibling in @('existing.browser.test.tsx', 'existing.live.spec.ts')) {
+        if ((Get-Content $Log -Raw) -notmatch "Manual verification not run.*$([regex]::Escape($Sibling))") {
+            throw "Missing unchanged browser/live sibling report: $Sibling"
+        }
+    }
+    if ((Get-Content $Log -Raw) -match 'Manual verification not run.*unchanged.browser.test.tsx') { throw 'Unrelated browser test was reported' }
     if ((Get-Content $Log -Raw) -notmatch 'PASS: Preflight focused tests') { throw 'Missing successful-check report' }
 
+    $Attempt = 0
     foreach ($Kind in @('fmt', 'lint', 'typecheck', 'test')) {
+        $PreviousLog = Get-Content $Log -Raw
+        $Attempt++
         $Mock.Calls = @()
         $Mock.FailOn = $Kind
         $Mock.ExitCode = 2
@@ -70,13 +82,18 @@ try {
         }
         if (!$Failed -or $env:ELECTRON_RUN_AS_NODE -ne '1' -or (Get-Location).Path -ne $Location) { throw 'Failure did not stop checks or restore caller state' }
         if ((Get-Content $Log -Raw) -notmatch 'FAIL: .*exit 2') { throw 'Missing failed-check report' }
+        $ArchivedLog = Join-Path $Root ('preflight.attempt-{0:D4}.log' -f $Attempt)
+        if (!(Test-Path $ArchivedLog) -or (Get-Content $ArchivedLog -Raw) -cne $PreviousLog) { throw 'Retry overwrote the previous attempt log' }
         if ($Kind -ne 'test' -and @($Mock.Calls | Where-Object { $_[0] -eq 'test' }).Count) { throw 'Checks continued after failure' }
     }
     $Mock.Calls = @()
     $Mock.FailOn = ''
+    $FailedLog = Get-Content $Log -Raw
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef HEAD -LogPath $Log
     if ($Mock.Calls.Count) { throw 'Empty scopes must not run repository-wide checks' }
-    Write-Host 'PASS: scoped checks; sibling tests; browser/live reporting; nonzero exit guards; environment restoration'
+    if ((Get-Content (Join-Path $Root 'preflight.attempt-0005.log') -Raw) -cne $FailedLog) { throw 'Successful retry lost the failed test log' }
+    if ((Get-Content (Join-Path $Root 'preflight.attempt-0001.log') -Raw) -notmatch 'PASS: Preflight focused tests') { throw 'Later retries changed an earlier archive' }
+    Write-Host 'PASS: scoped checks; unchanged browser/live siblings; numbered retry logs; nonzero exit guards; environment restoration'
 } finally {
     [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $PreviousElectronRunAsNode, 'Process')
     Remove-Item -LiteralPath $Root -Recurse -Force

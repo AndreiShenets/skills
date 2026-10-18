@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot '../scripts/git.ps1')
+. (Join-Path $PSScriptRoot '../scripts/progress.ps1')
 $Root = Join-Path ([System.IO.Path]::GetTempPath()) ("t3-skill-git-test-" + [guid]::NewGuid().ToString('N'))
 $Origin = Join-Path $Root 'origin.git'
 $Repo = Join-Path $Root 'repo'
@@ -29,6 +30,20 @@ try {
     git -C $Repo push origin customizations/occupied customizations/remote-only | Out-Null
     git -C $Repo branch -d customizations/remote-only | Out-Null
     git -C $Repo worktree add $Occupied customizations/occupied | Out-Null
+    $BuildPath = Get-BuildWorktreeDirectory -Worktree $Repo -RunName '2026_10_18_15_46-fixture'
+    $ExpectedBuildPath = Join-Path $Root 'repo-as-custom/2026_10_18_15_46-fixture'
+    if ([IO.Path]::GetFullPath($BuildPath) -ne [IO.Path]::GetFullPath($ExpectedBuildPath)) { throw 'Build worktree is not a short repository sibling' }
+    if ((Get-BuildWorktreeDirectory -Worktree $Occupied -RunName '2026_10_18_15_46-fixture') -ne $BuildPath) { throw 'Linked checkout changed the build-worktree root' }
+    Assert-BuildWorktreeLocation -Path $BuildPath
+    Assert-BuildWorktreeLocation -Path (Join-Path $Root '.github/build')
+    foreach ($GitDirectory in @('.git', '.GIT')) {
+        $LocationBlocked = $false
+        try { Assert-BuildWorktreeLocation -Path (Join-Path $Repo "$GitDirectory/as-custom/build") } catch {
+            if ($_.Exception.Message -notlike 'Build worktrees must be outside .git*') { throw }
+            $LocationBlocked = $true
+        }
+        if (!$LocationBlocked) { throw 'Build worktree under Git metadata was accepted' }
+    }
     Commit-File $Occupied 'custom.txt'
     Commit-File $Repo 'main.txt'
     git -C $Repo push origin main | Out-Null
@@ -71,6 +86,16 @@ try {
         Customizations = @{}; BuildBranch = 'custom_builds/2026_10_17_15_39'; Work = $Build; Merged = $false
     } | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
+    $UnsafeRunPath = Join-Path $Scratch 'unsafe-run.json'
+    @{
+        Repo = $Repo; Scratch = $Scratch; MainSha = $Main; Work = (Join-Path $Repo '.git/as-custom/build')
+    } | ConvertTo-Json | Set-Content $UnsafeRunPath
+    $LocationBlocked = $false
+    try { & $Workflow -Stage Merge -Run $UnsafeRunPath } catch {
+        if ($_.Exception.Message -notlike 'Build worktrees must be outside .git*') { throw }
+        $LocationBlocked = $true
+    }
+    if (!$LocationBlocked -or (Test-Path (Join-Path $Repo '.git/as-custom/build'))) { throw 'Merge created a build worktree inside Git metadata' }
     & $Workflow -Stage Merge -Run $Run
     & $Workflow -Stage Merge -Run $Run
     $Saved = Get-Content $Run -Raw | ConvertFrom-Json -AsHashtable
@@ -132,7 +157,7 @@ try {
         $AheadBlocked = $true
     }
     if (!$AheadBlocked -or (git -C $Origin rev-parse main).Trim() -ne $NewMain) { throw 'Ahead-main guard failed' }
-    Write-Host 'PASS: remote-only inventory; approved skips persist without changing branches; frozen selection; merge/resume; failure guards'
+    Write-Host 'PASS: short sibling worktrees; Git-directory guard; remote-only inventory; approved skips; frozen selection; merge/resume; failure guards'
 } finally {
     # Only this test's newly created fixture is removed.
     Remove-Item -LiteralPath $Root -Recurse -Force

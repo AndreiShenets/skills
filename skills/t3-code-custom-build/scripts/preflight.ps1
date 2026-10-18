@@ -17,9 +17,11 @@ function Invoke-CustomBuildPreflight {
         if ($_ -match '\.(?:test|spec)\.[cm]?[jt]sx?$') { $_ }
         else {
             $Stem = $_ -replace '\.[cm]?[jt]sx?$', ''
-            foreach ($Suffix in @('.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx')) {
-                $Candidate = "$Stem$Suffix"
-                if (Test-Path -LiteralPath (Join-Path $Worktree $Candidate) -PathType Leaf) { $Candidate }
+            foreach ($Kind in @('', '.browser', '.live')) {
+                foreach ($Suffix in @('.test.ts', '.test.tsx', '.spec.ts', '.spec.tsx')) {
+                    $Candidate = "$Stem$Kind$Suffix"
+                    if (Test-Path -LiteralPath (Join-Path $Worktree $Candidate) -PathType Leaf) { $Candidate }
+                }
             }
         }
     } | Sort-Object -Unique)
@@ -46,6 +48,16 @@ function Invoke-CustomBuildPreflight {
         }
     }
 
+    if (Test-Path -LiteralPath $LogPath) {
+        $Stem = [IO.Path]::GetFileNameWithoutExtension($LogPath)
+        $Extension = [IO.Path]::GetExtension($LogPath)
+        $Attempt = 0
+        do {
+            $Attempt++
+            $Archive = Join-Path (Split-Path $LogPath -Parent) ('{0}.attempt-{1:D4}{2}' -f $Stem, $Attempt, $Extension)
+        } while (Test-Path -LiteralPath $Archive)
+        Move-Item -LiteralPath $LogPath -Destination $Archive
+    }
     Set-Content -LiteralPath $LogPath -Encoding utf8NoBOM -Value "Preflight: $BaseRef..HEAD"
     foreach ($File in $ManualTests) {
         "Manual verification not run (browser/live): $File" | Tee-Object -FilePath $LogPath -Append | Write-Host
