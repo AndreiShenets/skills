@@ -5,7 +5,7 @@ $Work = Join-Path $Root 'work'
 $Out = Join-Path $Root 'out'
 $Scratch = Join-Path $Root 'scratch'
 New-Item -ItemType Directory -Path $Work, $Out, $Scratch, "$Work/apps/server/dist/client", "$Work/scripts" | Out-Null
-$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @() }
+$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; FailPreflight = $false; Preflights = 0; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @() }
 $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
 $PreviousDesktopVersion = [Environment]::GetEnvironmentVariable('T3CODE_DESKTOP_VERSION', 'Process')
 
@@ -46,6 +46,12 @@ function docker {
 }
 
 function vp {
+    if ($args[0] -eq 'fmt') {
+        $Mock.Preflights++
+        $global:LASTEXITCODE = if ($Mock.FailPreflight) { 2 } else { 0 }
+        return
+    }
+    if ($args[0] -eq 'lint') { $global:LASTEXITCODE = 0; return }
     if ($args[0] -eq 'install') {
         $StoreIndex = [array]::IndexOf($args, '--store-dir')
         if ($StoreIndex -lt 0) { throw 'Windows install has no reusable store' }
@@ -89,6 +95,11 @@ try {
     git -C $Work add .
     git -C $Work commit -m fixture | Out-Null
     $Mock.BuildSha = (git -C $Work rev-parse HEAD).Trim()
+    $MainSha = $Mock.BuildSha
+    Set-Content "$Work/scripts/preflight-fixture.ts" 'export const fixture = true;'
+    git -C $Work add scripts/preflight-fixture.ts
+    git -C $Work commit -m customization | Out-Null
+    $Mock.BuildSha = (git -C $Work rev-parse HEAD).Trim()
     git init --bare --initial-branch=main (Join-Path $Root 'origin.git') | Out-Null
     git -C $Work remote add origin (Join-Path $Root 'origin.git')
     $env:APP_VERSION = '9.9.9'
@@ -114,11 +125,25 @@ try {
     @{
         Merged = $true; Built = $false; Work = $Work; BuildBranch = 'main'; Scratch = $Scratch
         Version = '0.1.1'; Stamp = '202610171539'; RunId = '2026_10_17_15_39'; Out = $Out; BuildSha = ''
+        MainSha = $MainSha
     } | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
     & $Workflow -Stage Build -Run $Run
     if ($Mock.FrontendRuns -ne 1 -or $Mock.PackagingRuns -ne 3) { throw 'Build stage did not complete' }
     if ($env:APP_VERSION -ne '9.9.9' -or $env:T3CODE_DESKTOP_VERSION -ne '9.9.9') { throw 'Build changed caller environment' }
+    $Completed = Get-Content $Run -Raw | ConvertFrom-Json
+    if ($Mock.Preflights -ne 1 -or $Completed.PreflightSha -ne $Mock.BuildSha) { throw 'Build did not validate its pinned source' }
+    $Mock.FailPreflight = $true
+    $Failed = $false
+    try { & $Workflow -Stage Build -Run $Run } catch {
+        if ($_.Exception.Message -notlike 'Preflight formatting failed*') { throw }
+        $Failed = $true
+    }
+    $Blocked = Get-Content $Run -Raw | ConvertFrom-Json
+    if (!$Failed -or $Mock.FrontendRuns -ne 1 -or $Mock.PackagingRuns -ne 3 -or $Blocked.Built -or $Blocked.PreflightSha) {
+        throw 'Failed preflight reached compilation/packaging or kept stale verification'
+    }
+    $Mock.FailPreflight = $false
     $Mock.FailFrontend = $true
     $Failed = $false
     try { & $Workflow -Stage Build -Run $Run } catch {
@@ -134,7 +159,7 @@ try {
         throw 'Different runs must share caches but not source workspaces'
     }
     $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work '.git/as-custom/cache/pnpm-store'))
-    if ($Mock.StorePaths.Count -ne 2 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
+    if ($Mock.StorePaths.Count -ne 3 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }
     Write-Host 'PASS: pinned versions; environment restoration; isolated sources; per-run containers with reusable caches; build/resume guards'

@@ -82,11 +82,19 @@ try {
     Set-Content $Notes 'fixture notes'
     $Run = Join-Path $Scratch 'run.json'
     $State = @{
-        Built = $true; Work = $Work; Out = $Out; Scratch = $Scratch; BuildSha = $Sha; MainSha = $Sha
+        Built = $true; Work = $Work; Out = $Out; Scratch = $Scratch; BuildSha = $Sha; MainSha = $Sha; PreflightSha = ''
         Version = '0.1.1'; Stamp = '202610171539'; ReleaseUrl = ''
     }
     $State | ConvertTo-Json | Set-Content $Run
     $Workflow = Join-Path $PSScriptRoot '../scripts/workflow.ps1'
+    $PreflightBlocked = $false
+    try { & $Workflow -Stage Publish -Run $Run -NotesFile $Notes } catch {
+        if ($_.Exception.Message -ne 'Complete Build with passing preflight for this source first') { throw }
+        $PreflightBlocked = $true
+    }
+    if (!$PreflightBlocked -or $Mock.Creates) { throw 'Unverified source reached publication' }
+    $State.PreflightSha = $Sha
+    $State | ConvertTo-Json | Set-Content $Run
     foreach ($Expected in @('interrupted after draft creation', 'interrupted after installer upload', 'interrupted during download', 'interrupted after publication')) {
         $Failed = $false
         try { & $Workflow -Stage Publish -Run $Run -NotesFile $Notes } catch {

@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'git.ps1')
 . (Join-Path $PSScriptRoot 'progress.ps1')
+. (Join-Path $PSScriptRoot 'preflight.ps1')
 if ($PSBoundParameters.ContainsKey('SkipBranches') -and ($Stage -ne 'Sync' -or $Run)) {
     throw 'Choose SkipBranches when starting Sync; existing runs keep their saved selection'
 }
@@ -37,7 +38,7 @@ if (!$Run) {
         Branches = @(); SkippedBranches = @($SkipBranches | Sort-Object -Unique)
         Customizations = [ordered]@{}; Integrated = [ordered]@{}; BuildBranch = "custom_builds/$RunId"
         Work = (Join-Path $Scratch 'build'); Out = (Join-Path $Repo "release/as-custom/$RunId")
-        BuildSha = ''; Merged = $false; Built = $false; WslSmoke = $false; ReleaseUrl = ''; Cache = $Cache
+        BuildSha = ''; PreflightSha = ''; Merged = $false; Built = $false; WslSmoke = $false; ReleaseUrl = ''; Cache = $Cache
     }
     Save-Run
 } else {
@@ -132,10 +133,12 @@ try {
     }
     Build {
         if (!$State.Merged) { throw 'Complete Merge first' }
+        if (!$State.MainSha) { throw 'Missing frozen main SHA; complete Sync first' }
         Assert-Clean $State.Work
         if ((git -C $State.Work symbolic-ref --short HEAD).Trim() -cne $State.BuildBranch) { throw 'Build branch changed' }
         $State.Built = $false
         $State.WslSmoke = $false
+        $State.PreflightSha = ''
         Save-Run
         Push-Location $State.Work
         try {
@@ -152,6 +155,11 @@ try {
             git push origin $State.BuildBranch
             Assert-Clean $State.Work
             $State.BuildSha = (git rev-parse HEAD).Trim()
+            Save-Run
+            Invoke-CustomBuildPreflight -Worktree $State.Work -BaseRef $State.MainSha -LogPath (Join-Path $State.Scratch 'preflight.log')
+            Assert-Clean $State.Work
+            if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during preflight' }
+            $State.PreflightSha = $State.BuildSha
             Save-Run
             $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
             try {
@@ -177,6 +185,7 @@ try {
     Publish {
         if (!$State.Built) { throw 'Complete Build first' }
         if ($State.ReleaseUrl) { Write-Host $State.ReleaseUrl; break }
+        if ($State.PreflightSha -ne $State.BuildSha) { throw 'Complete Build with passing preflight for this source first' }
         if (!$NotesFile -or !(Test-Path -LiteralPath $NotesFile)) { throw 'Supply -NotesFile <release-notes.md>' }
         Assert-Clean $State.Work
         if ((git -C $State.Work rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed after build' }
