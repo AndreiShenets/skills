@@ -17,3 +17,23 @@ function Get-BuildCacheDirectory {
     $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
     Join-Path $Common 'as-custom/cache'
 }
+
+function Assert-BuildWorktreeLocation {
+    param([Parameter(Mandatory)][string]$Path)
+    if ([IO.Path]::GetFullPath($Path) -match '(^|[\\/])\.git([\\/]|$)') {
+        throw "Build worktrees must be outside .git: $Path. Move the worktree with git worktree move and update Work in run.json."
+    }
+}
+
+function Get-BuildWorktreeDirectory {
+    param(
+        [Parameter(Mandatory)][string]$Worktree,
+        [Parameter(Mandatory)][ValidatePattern('^[\w-]+$')][string]$RunName
+    )
+    $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
+    $MainCheckout = Split-Path $Common -Parent
+    $Root = Join-Path (Split-Path $MainCheckout -Parent) ((Split-Path $MainCheckout -Leaf) + '-as-custom')
+    $Path = Join-Path $Root $RunName
+    Assert-BuildWorktreeLocation -Path $Path
+    $Path
+}
