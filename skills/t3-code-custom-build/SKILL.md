@@ -35,8 +35,11 @@ Build timeout ≥900000 ms. Timed milestones identify dependency installation, c
 Read `run.json` and `preflight.log`; write concise release notes to `$NotesFile` with exactly these sections, in order:
 
 - **Source**: upstream nightly link/base version, frozen timestamp/offset, main SHA, build branch/SHA, skipped branches (or `none`).
-- **Customization inputs**: one table row per discovered remote customization, including approved skips/removals: `Branch | Frozen SHA | What it does | Disposition`. Describe concrete behavior from code/PR evidence, not the branch name alone; disposition is included, skipped, or removed.
-- **Upstream overlap**: one entry per customization from the table, keyed by branch. State coverage (full, partial, absent, unreleased, or unverified), upstream behavior versus remaining custom behavior, and retained/skipped/removed outcome. Link merged PRs, published releases, and code evidence where available; distinguish verified absence from uncertainty. Account for every customization individually.
+- **Customization inputs**:
+  - Two-column table, `Branch | SHA`: one row per discovered remote customization, including approved skips/removals. Show full branch names and short SHAs linked to full commits.
+  - Immediately below, one bullet per row in the same order: `**<branch suffix>** — <what it does>`. Describe concrete behavior from code/PR evidence in one sentence.
+  - End with `All included.` or list skipped/removed branches; all others are included.
+- **Upstream overlap**: one compact bullet per customization in table order: `**<branch suffix> — <coverage>.** <upstream behavior; remaining custom behavior>. <retained/skipped/removed>.` Coverage: full, partial, absent, unreleased, or unverified. Link merged PRs, published releases, and code evidence where available; distinguish verified absence from uncertainty.
 
 Keep verification logs, installation guidance, and build narration out of release notes. Before publishing, match both customization sections against the frozen inputs and approved exclusions.
 
