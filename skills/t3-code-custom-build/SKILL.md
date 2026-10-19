@@ -32,12 +32,12 @@ Commit reusable fixes to their owning `customizations/*` branches as well as the
 
 Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs and retained Docker container name are under the run's scratch directory; Linux tools/package/Cargo caches use the reusable `t3-as-custom-linux-cache` volume. Check active processes/container before retrying `Build`.
 
-Read `run.json` and `preflight.log`; write concise release notes to `$NotesFile` with exactly these sections, in order:
+Read `run.json` and `preflight.log`; write concise release notes to `$NotesFile` with exactly these `##` sections, in order:
 
 - **Source**: upstream nightly link/base version, frozen timestamp/offset, main SHA, build branch/SHA, skipped branches (or `none`).
 - **Customization inputs**:
   - Two-column table, `Branch | SHA`: one row per discovered remote customization, including approved skips/removals. Show full branch names and short SHAs linked to full commits.
-  - Immediately below, one bullet per row in the same order: `**<branch suffix>** — <what it does>`. Describe concrete behavior from code/PR evidence in one sentence.
+  - Immediately below, one `### <branch suffix>` heading per row in the same order. Follow each heading with a blank line and a short paragraph describing concrete behavior from code/PR evidence.
   - End with `All included.` or list skipped/removed branches; all others are included.
 - **Upstream overlap**: one compact bullet per customization in table order: `**<branch suffix> — <coverage>.** <upstream behavior; remaining custom behavior>. <retained/skipped/removed>.` Coverage: full, partial, absent, unreleased, or unverified. Link merged PRs, published releases, and code evidence where available; distinguish verified absence from uncertainty.
 
