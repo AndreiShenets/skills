@@ -11,7 +11,7 @@ PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded
 **First: check upstream overlap, before Sync/Merge/Build.**
 1. Fetch current `pingdotgg/t3code:main`, upstream release tags, and remote `customizations/*` without merging or pushing. For each customization, search merged upstream PRs and published releases (including nightlies) for equivalent fixes/features. Consider issues only as pointers to merged, released implementations; exclude open PRs and closed-unmerged PRs from the overlap check and report.
 2. Count a customization as fully replaced only when merged upstream code covers all its required behavior, is included in a published upstream release, and remains present in current upstream main. Verify code and release inclusion; issue closure, PR merge status, and commit ancestry alone do not prove equivalence. Account for partial implementations and reverts.
-3. Keep customizations with partial, absent, unreleased, or unverified coverage automatically; save findings for the final report and continue without requesting confirmation. If none are fully replaced, proceed directly to Sync/Merge/Build without an interim overlap report.
+3. Keep customizations with partial, absent, unreleased, or unverified coverage automatically; save per-customization findings for release notes and continue without requesting confirmation. If none are fully replaced, proceed directly to Sync/Merge/Build without an interim overlap report.
 4. Only for fully replaced customizations, report merged PR/release links and code evidence, then ask whether to keep, skip this run, or remove them; wait for the answer before proceeding. Remove branches only with explicit approval. Set `$SkipBranches` to approved per-run exclusions (an empty array otherwise).
 
 Run each stage separately; use the printed `run.json` path as `$Run`. Build worktrees use a short sibling directory outside the repository; logs and package caches remain under its Git data. Vite blocks worktrees beneath `.git`. For an older run there, use `git worktree move` and update `Work` in `run.json` before resuming Merge/Build.
@@ -32,7 +32,13 @@ Commit reusable fixes to their owning `customizations/*` branches as well as the
 
 Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs and retained Docker container name are under the run's scratch directory; Linux tools/package/Cargo caches use the reusable `t3-as-custom-linux-cache` volume. Check active processes/container before retrying `Build`.
 
-Read `run.json` and `preflight.log`; write release notes to `$NotesFile`: upstream nightly tag, timestamp/offset, main/build/customization SHAs, skipped branches, Linux archive SHA256, passed checks and unrun browser/live tests, unsigned status, actual installation/update behavior.
+Read `run.json` and `preflight.log`; write concise release notes to `$NotesFile` with exactly these sections, in order:
+
+- **Source**: upstream nightly link/base version, frozen timestamp/offset, main SHA, build branch/SHA, skipped branches (or `none`).
+- **Customization inputs**: one table row per discovered remote customization, including approved skips/removals: `Branch | Frozen SHA | What it does | Disposition`. Describe concrete behavior from code/PR evidence, not the branch name alone; disposition is included, skipped, or removed.
+- **Upstream overlap**: one entry per customization from the table, keyed by branch. State coverage (full, partial, absent, unreleased, or unverified), upstream behavior versus remaining custom behavior, and retained/skipped/removed outcome. Link merged PRs, published releases, and code evidence where available; distinguish verified absence from uncertainty. Account for every customization individually.
+
+Keep verification logs, installation guidance, and build narration out of release notes. Before publishing, match both customization sections against the frozen inputs and approved exclusions.
 
 ```pwsh
 & "$Skill/scripts/workflow.ps1" -Stage Publish -Run $Run -NotesFile $NotesFile
@@ -40,4 +46,4 @@ Read `run.json` and `preflight.log`; write release notes to `$NotesFile`: upstre
 
 `Publish`: upload renamed installer + `SHA256SUMS` to a draft fork prerelease; verify downloaded bytes and tag target; publish without marking latest. Retry the same command to resume matching tags/releases; mismatched inputs stop publication.
 
-Report release URL, installer path, version, main/build SHAs, checks, installation/update caveats. Include the saved overlap findings here, once the build is prepared and publication is complete: merged, released partial implementations may be mentioned with links and remaining differences; they do not require confirmation.
+Report release URL, installer path, version, main/build SHAs, checks, installation/update caveats. Link to the release notes for overlap findings.
