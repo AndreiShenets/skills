@@ -16,6 +16,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'checkpoints.ps1')
 . (Join-Path $PSScriptRoot 'release-notes.ps1')
 . (Join-Path $PSScriptRoot 'cleanup.ps1')
+. (Join-Path $PSScriptRoot 'public-config.ps1')
 if ($Rebuild -and $Stage -ne 'Build') { throw 'Use Rebuild only with Build' }
 if ($PSBoundParameters.ContainsKey('SkipBranches') -and ($Stage -ne 'Sync' -or $Run)) {
     throw 'Choose SkipBranches when starting Sync; existing runs keep their saved selection'
@@ -151,6 +152,7 @@ try {
         $State.WslSmoke = $false
         $State.PreflightSha = ''
         Save-Run
+        $ConnectConfig = Get-T3ConnectPublicConfig -Worktree $State.Work -Repo $(if ($State.Repo) { $State.Repo } else { $State.Work })
         Push-Location $State.Work
         try {
             Invoke-BuildStep -Label 'Windows dependencies (shared store)' -Action {
@@ -166,7 +168,7 @@ try {
             git push origin $State.BuildBranch
             Assert-Clean $State.Work
             $State.BuildSha = (git rev-parse HEAD).Trim()
-            $State.BuildKey = Get-CustomBuildKey -BuildSha $State.BuildSha -Version $State.Version -MainSha $State.MainSha -RunId $State.RunId
+            $State.BuildKey = Get-CustomBuildKey -BuildSha $State.BuildSha -Version $State.Version -MainSha $State.MainSha -RunId $State.RunId -PublicConfig $ConnectConfig
             Save-Run
             $PreflightLog = Join-Path $State.Scratch 'preflight.log'
             if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $State.BuildKey -Files @($PreflightLog))) {
@@ -189,15 +191,17 @@ try {
                 $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
                 try {
                     $env:APP_VERSION = $State.Version
-                    Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
-                        Invoke-WorktreeVp -Worktree $State.Work -Arguments @('run', 'build:desktop')
-                        node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+                    Invoke-WithT3ConnectPublicConfig -Config $ConnectConfig -Action {
+                        Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
+                            Invoke-WorktreeVp -Worktree $State.Work -Arguments @('run', 'build:desktop')
+                            node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+                        }
                     }
                 } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
             }
         } finally { Pop-Location }
         if (!$ReuseInstaller) {
-            & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out -BuildKey $State.BuildKey -Rebuild:$Rebuild
+            & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out -BuildKey $State.BuildKey -PublicConfig $ConnectConfig -Rebuild:$Rebuild
         } else { Write-Host 'Reusing verified installer and Linux runtime' }
         if ($WslDistro) {
             $Script = (wsl.exe -d $WslDistro -- wslpath -u (Join-Path $PSScriptRoot 'wsl-smoke.sh')).Trim()

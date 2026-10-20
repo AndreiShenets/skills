@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][string]$OutputDir,
     [string]$BuildKey,
+    [System.Collections.IDictionary]$PublicConfig,
     [switch]$Rebuild
 )
 $ErrorActionPreference = 'Stop'
@@ -13,9 +14,12 @@ $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'progress.ps1')
 . (Join-Path $PSScriptRoot 'tooling.ps1')
 . (Join-Path $PSScriptRoot 'checkpoints.ps1')
+. (Join-Path $PSScriptRoot 'public-config.ps1')
 Assert-Clean $Worktree
 $BuildSha = (git -C $Worktree rev-parse HEAD).Trim()
-if (!$BuildKey) { $BuildKey = Get-CustomBuildKey -BuildSha $BuildSha -Version $Version -RunId $RunId }
+if (!$PublicConfig) { $PublicConfig = Get-T3ConnectPublicConfig -Worktree $Worktree }
+if (!$BuildKey) { $BuildKey = Get-CustomBuildKey -BuildSha $BuildSha -Version $Version -RunId $RunId -PublicConfig $PublicConfig }
+$ConnectArgs = @($PublicConfig.Keys | Sort-Object | ForEach-Object { '--env'; "$_=$($PublicConfig[$_])" })
 $SourceTar = Join-Path $Scratch "source-$BuildSha.tar"
 $Client = Join-Path $Worktree 'apps/server/dist/client'
 if (!(Test-Path (Join-Path $Client 'index.html'))) { throw 'Build desktop/server/web first' }
@@ -45,6 +49,9 @@ if ($Existing) {
     if ($ContainerEnv -notcontains "BUILD_SHA=$BuildSha" -or $ContainerEnv -notcontains "BUILD_VERSION=$Version") {
         throw 'Existing container belongs to different build inputs; choose a new run ID'
     }
+    foreach ($Key in $PublicConfig.Keys) {
+        if ($ContainerEnv -cnotcontains "${Key}=$($PublicConfig[$Key])") { throw 'Existing container has different T3 Connect configuration; choose a new run ID' }
+    }
 }
 if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $BuildKey -Files @($Archive))) {
     Write-Host 'Reusing verified Linux archive'
@@ -60,6 +67,7 @@ if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $Bui
         docker run --name $Name --platform linux/amd64 `
         --env "BUILD_VERSION=$Version" --env "BUILD_SHA=$BuildSha" `
         --env "SEA_NODE_VERSION=$SeaNode" --env "VITE_PLUS_VERSION=$VpVersion" `
+        @ConnectArgs `
         --mount "type=volume,source=$Name,target=/build" `
         --mount 'type=volume,source=t3-as-custom-linux-cache,target=/cache' `
         --mount "type=bind,source=$SourceTar,target=/input/source.tar,readonly" `
@@ -81,10 +89,12 @@ if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name installer -Key 
 Clear-BuildCheckpoint -Scratch $Scratch -Name installer
 Push-Location $Worktree
 try {
-    Invoke-BuildStep -Label 'Windows NSIS packaging and payload validation' -Action {
-        Invoke-WorktreeVp -Worktree $Worktree -Arguments @('run', 'dist:desktop:win:x64', '--skip-build', '--build-version', $Version, '--wsl-runtime', $Archive, '--output-dir', $OutputDir) 2>&1 |
-            Tee-Object (Join-Path $Scratch 'windows-build.log')
-        if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+    Invoke-WithT3ConnectPublicConfig -Config $PublicConfig -Action {
+        Invoke-BuildStep -Label 'Windows NSIS packaging and payload validation' -Action {
+            Invoke-WorktreeVp -Worktree $Worktree -Arguments @('run', 'dist:desktop:win:x64', '--skip-build', '--build-version', $Version, '--wsl-runtime', $Archive, '--output-dir', $OutputDir) 2>&1 |
+                Tee-Object (Join-Path $Scratch 'windows-build.log')
+            if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+        }
     }
 } finally { Pop-Location }
 if (!(Test-Path (Join-Path $OutputDir "T3-Code-$Version-x64.exe"))) { throw 'Installer missing' }

@@ -8,8 +8,26 @@ New-Item -ItemType Directory -Path $Work, $Out, $Scratch, "$Work/apps/server/dis
 $Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; FailPreflight = $false; Preflights = 0; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @() }
 $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
 $PreviousDesktopVersion = [Environment]::GetEnvironmentVariable('T3CODE_DESKTOP_VERSION', 'Process')
+$ConnectConfig = [ordered]@{
+    T3CODE_CLERK_PUBLISHABLE_KEY = 'pk_test_fixture'
+    T3CODE_CLERK_JWT_TEMPLATE = 'fixture-template'
+    T3CODE_CLERK_CLI_OAUTH_CLIENT_ID = 'fixture-oauth'
+    T3CODE_RELAY_URL = 'https://relay.example.test'
+}
+$PreviousConnect = @{}
+foreach ($Key in $ConnectConfig.Keys) { $PreviousConnect[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process') }
+
+function Assert-ConnectEnvironment {
+    foreach ($Key in $ConnectConfig.Keys) {
+        if ([Environment]::GetEnvironmentVariable($Key, 'Process') -cne $ConnectConfig[$Key]) { throw "Missing Connect configuration: $Key" }
+    }
+}
 
 function node {
+    if ($args[0] -like '*public-config.mjs') {
+        if ($Mock.FailConfig) { $global:LASTEXITCODE = 1; return }
+        $ConnectConfig | ConvertTo-Json -Compress; $global:LASTEXITCODE = 0; return
+    }
     if ($args[0] -match '[\\/]bin[\\/]vp$') { $Forward = @($args | Select-Object -Skip 1); Invoke-TestVp @Forward; return }
     if ($args[0] -eq '--version') { 'v26.8.2' }
     elseif ($args[0] -eq '-p') { '1.0.0' }
@@ -24,9 +42,11 @@ function docker {
         'ps' { if ($Mock.State -ne 'missing') { 'fixture-container' } }
         'inspect' {
             if ($args -contains '{{.State.Status}}') { $Mock.State }
-            else { ConvertTo-Json @("BUILD_SHA=$($Mock.BuildSha)", 'BUILD_VERSION=0.1.1') -Compress }
+            else { ConvertTo-Json (@("BUILD_SHA=$($Mock.BuildSha)", 'BUILD_VERSION=0.1.1') + @($Mock.ConnectEnv)) -Compress }
         }
         'run' {
+            $Mock.ConnectEnv = @($ConnectConfig.Keys | ForEach-Object { "$_=$($ConnectConfig[$_])" })
+            foreach ($Entry in $Mock.ConnectEnv) { if ($args -cnotcontains $Entry) { throw "Linux build missing Connect configuration: $($Entry.Split('=')[0])" } }
             if ($args -notcontains "BUILD_SHA=$($Mock.BuildSha)") { throw 'Wrong source SHA' }
             if ($args -notcontains 'SEA_NODE_VERSION=26.8.2') { throw 'SEA version not derived from source' }
             if ($args -notcontains 'VITE_PLUS_VERSION=1.0.0') { throw 'Vite+ version not derived from installation' }
@@ -65,6 +85,7 @@ function Invoke-TestVp {
         return
     }
     if ($args[0] -eq 'run' -and $args[1] -eq 'build:desktop') {
+        Assert-ConnectEnvironment
         if ($env:APP_VERSION -ne '0.1.1') { throw 'Frontend saw inherited APP_VERSION' }
         if ($Mock.FailFrontend) { throw 'simulated frontend failure' }
         $Mock.FrontendRuns++
@@ -72,6 +93,7 @@ function Invoke-TestVp {
         return
     }
     if ($args[0] -ne 'run' -or $args[1] -ne 'dist:desktop:win:x64') { throw "Wrong packaging command: $($args | ConvertTo-Json -Compress)" }
+    Assert-ConnectEnvironment
     if ($args -notcontains '--skip-build' -or $args -notcontains '--wsl-runtime') { throw 'Missing WSL packaging argument' }
     $VersionIndex = [array]::IndexOf($args, '--build-version')
     if ($VersionIndex -lt 0 -or $args[$VersionIndex + 1] -ne '0.1.1') { throw 'Inherited desktop version was not overridden' }
@@ -118,6 +140,13 @@ try {
     Set-Content (Join-Path $Out 'T3-Code-0.1.1-x64.exe') 'tampered installer'
     & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out
     if ($Mock.DockerRuns -ne 1 -or $Mock.DockerStarts -ne 0 -or $Mock.PackagingRuns -ne 2) { throw 'Tampered installer did not rerun only packaging' }
+    $ConnectConfig.T3CODE_CLERK_JWT_TEMPLATE = 'changed-template'
+    $ConfigBlocked = $false
+    try { & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out } catch {
+        if ($_.Exception.Message -notlike 'Existing container has different T3 Connect configuration*') { throw }
+        $ConfigBlocked = $true
+    } finally { $ConnectConfig.T3CODE_CLERK_JWT_TEMPLATE = 'fixture-template' }
+    if (!$ConfigBlocked -or $Mock.DockerStarts -or $Mock.PackagingRuns -ne 2) { throw 'Mismatched Connect container was reused' }
     $Mock.State = 'running'
     $Blocked = $false
     try {
@@ -146,6 +175,13 @@ try {
         $LocationBlocked = $true
     } finally { Set-Content $Run $RunBeforeGuard }
     if (!$LocationBlocked -or $Mock.StorePaths.Count -or $Mock.FrontendRuns) { throw 'Unsafe worktree reached dependency installation or compilation' }
+    $Mock.FailConfig = $true
+    $ConfigBlocked = $false
+    try { & $Workflow -Stage Build -Run $Run } catch {
+        if ($_.Exception.Message -notlike 'Could not resolve public T3 Connect configuration*') { throw }
+        $ConfigBlocked = $true
+    } finally { $Mock.FailConfig = $false }
+    if (!$ConfigBlocked -or $Mock.StorePaths.Count -or $Mock.FrontendRuns) { throw 'Missing Connect config reached dependency installation or compilation' }
     & $Workflow -Stage Build -Run $Run
     if ($Mock.FrontendRuns -ne 1 -or $Mock.PackagingRuns -ne 3) { throw 'Build stage did not complete' }
     if ($env:APP_VERSION -ne '9.9.9' -or $env:T3CODE_DESKTOP_VERSION -ne '9.9.9') { throw 'Build changed caller environment' }
@@ -182,9 +218,16 @@ try {
     if ($Mock.StorePaths.Count -ne 4 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }
-    Write-Host 'PASS: Git-directory guard before installation; pinned versions; environment restoration; isolated sources; reusable caches; build/resume guards'
+    foreach ($Key in $ConnectConfig.Keys) {
+        if ([Environment]::GetEnvironmentVariable($Key, 'Process') -cne $PreviousConnect[$Key]) { throw "Build leaked Connect configuration: $Key" }
+    }
+    Write-Host 'PASS: Connect config in Windows/WSL; config guard before installation; mismatched-container rejection; environment restoration; isolated sources; reusable caches; build/resume guards'
 } finally {
     [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process')
     [Environment]::SetEnvironmentVariable('T3CODE_DESKTOP_VERSION', $PreviousDesktopVersion, 'Process')
+    foreach ($Key in $PreviousConnect.Keys) {
+        if ($null -eq $PreviousConnect[$Key]) { Remove-Item -LiteralPath "Env:$Key" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($Key, $PreviousConnect[$Key], 'Process') }
+    }
     Remove-Item -LiteralPath $Root -Recurse -Force
 }

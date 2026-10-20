@@ -1,6 +1,7 @@
 function Get-CustomBuildKey {
-    param([string]$BuildSha, [string]$Version, [string]$MainSha = '', [string]$RunId = '')
+    param([string]$BuildSha, [string]$Version, [string]$MainSha = '', [string]$RunId = '', [System.Collections.IDictionary]$PublicConfig = @{})
     $Inputs = @($BuildSha, $Version, $MainSha, $RunId, (node --version))
+    foreach ($Key in ($PublicConfig.Keys | Sort-Object)) { $Inputs += "${Key}=$($PublicConfig[$Key])" }
     foreach ($File in (Get-ChildItem -LiteralPath $PSScriptRoot -File | Sort-Object Name)) {
         $Inputs += "$($File.Name):$((Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash)"
     }
