@@ -4,7 +4,10 @@ $PSNativeCommandUseErrorActionPreference = $true
 function Get-CustomRelease {
     param([string]$Tag)
     $PSNativeCommandUseErrorActionPreference = $false
-    $Output = gh release view $Tag --repo AndreiShenets/t3code --json tagName,name,url,isDraft,isPrerelease,assets 2>&1
+    $PreviousEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    try { $Output = gh release view $Tag --repo AndreiShenets/t3code --json tagName,name,url,isDraft,isPrerelease,assets,body 2>&1 }
+    finally { [Console]::OutputEncoding = $PreviousEncoding }
     if ($LASTEXITCODE -eq 0) { return (($Output -join "`n") | ConvertFrom-Json) }
     if (($Output -join "`n") -match 'release not found|HTTP 404') { return $null }
     throw "Cannot inspect release: $($Output -join '`n')"
@@ -51,6 +54,10 @@ function Publish-CustomRelease {
     if (!$Release -or $Release.tagName -cne $Tag -or $Release.name -cne $Title -or !$Release.isPrerelease) {
         throw 'Existing release metadata does not match this run'
     }
+    $ExpectedBody = (Get-Content -LiteralPath $NotesFile -Raw).Replace("`r`n", "`n").Trim()
+    if (([string]$Release.body).Replace("`r`n", "`n").Trim() -cne $ExpectedBody) {
+        throw 'Existing release notes do not match this run'
+    }
     foreach ($File in @($Installer, $Checksums)) {
         $Name = Split-Path -Leaf $File
         $Asset = @($Release.assets | Where-Object { $_.name -ceq $Name })
@@ -80,5 +87,6 @@ function Publish-CustomRelease {
     }
     $Release = Get-CustomRelease $Tag
     if (!$Release -or $Release.isDraft -or !$Release.isPrerelease) { throw 'Publication state mismatch' }
+    if (([string]$Release.body).Replace("`r`n", "`n").Trim() -cne $ExpectedBody) { throw 'Published release notes mismatch' }
     return $Release.url
 }

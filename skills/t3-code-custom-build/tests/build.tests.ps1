@@ -10,7 +10,9 @@ $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Proc
 $PreviousDesktopVersion = [Environment]::GetEnvironmentVariable('T3CODE_DESKTOP_VERSION', 'Process')
 
 function node {
-    if ($args[0] -eq '-p') { '1.0.0' }
+    if ($args[0] -match '[\\/]bin[\\/]vp$') { $Forward = @($args | Select-Object -Skip 1); Invoke-TestVp @Forward; return }
+    if ($args[0] -eq '--version') { 'v26.8.2' }
+    elseif ($args[0] -eq '-p') { '1.0.0' }
     elseif ($args[0] -eq 'scripts/apply-web-brand-assets.ts') {
         if ($env:APP_VERSION -ne '0.1.1') { throw 'Branding saw inherited APP_VERSION' }
     } elseif ($args[0] -notin @('--input-type=module', 'scripts/update-release-package-versions.ts')) { throw 'Unexpected node command' }
@@ -45,7 +47,7 @@ function docker {
     $global:LASTEXITCODE = 0
 }
 
-function vp {
+function Invoke-TestVp {
     if ($args[0] -eq 'fmt') {
         $Mock.Preflights++
         $global:LASTEXITCODE = if ($Mock.FailPreflight) { 2 } else { 0 }
@@ -55,8 +57,7 @@ function vp {
     if ($args[0] -eq 'install') {
         $StoreIndex = [array]::IndexOf($args, '--store-dir')
         if ($StoreIndex -lt 0) { throw 'Windows install has no reusable store' }
-        # PowerShell consumes the separator for this function mock, unlike native vp.
-        if ($MyInvocation.Line -notmatch '\s--\s+--store-dir(?:\s|$)') {
+        if ($args[$StoreIndex - 1] -cne '--') {
             throw 'Package-manager options must follow the vp pass-through separator'
         }
         $Mock.StorePaths += $args[$StoreIndex + 1]
@@ -70,7 +71,7 @@ function vp {
         $global:LASTEXITCODE = 0
         return
     }
-    if ($args[0] -ne 'run' -or $args[1] -ne 'dist:desktop:win:x64') { throw 'Wrong packaging command' }
+    if ($args[0] -ne 'run' -or $args[1] -ne 'dist:desktop:win:x64') { throw "Wrong packaging command: $($args | ConvertTo-Json -Compress)" }
     if ($args -notcontains '--skip-build' -or $args -notcontains '--wsl-runtime') { throw 'Missing WSL packaging argument' }
     $VersionIndex = [array]::IndexOf($args, '--build-version')
     if ($VersionIndex -lt 0 -or $args[$VersionIndex + 1] -ne '0.1.1') { throw 'Inherited desktop version was not overridden' }
@@ -88,6 +89,10 @@ try {
     git -C $Work config core.hooksPath (Join-Path $Root 'empty-hooks')
     Set-Content "$Work/apps/server/dist/client/index.html" '<html></html>'
     Set-Content "$Work/apps/server/vite.config.ts" 'const SEA_NODE_VERSION = "26.8.2";'
+    New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
+    Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
+    Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'
+    Set-Content "$Work/.gitignore" 'node_modules/'
     foreach ($Package in @('apps/server', 'apps/desktop', 'apps/web', 'packages/contracts')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Work $Package) | Out-Null
         Set-Content (Join-Path $Work "$Package/package.json") '{"version":"0.1.1"}'
@@ -107,9 +112,12 @@ try {
     $Helper = Join-Path $PSScriptRoot '../scripts/build-with-wsl.ps1'
     & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out
     & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out
-    if ($Mock.DockerRuns -ne 1 -or $Mock.DockerStarts -ne 1 -or $Mock.PackagingRuns -ne 2) {
+    if ($Mock.DockerRuns -ne 1 -or $Mock.DockerStarts -ne 0 -or $Mock.PackagingRuns -ne 1) {
         throw 'Fresh build/resume did not execute expected stages'
     }
+    Set-Content (Join-Path $Out 'T3-Code-0.1.1-x64.exe') 'tampered installer'
+    & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out
+    if ($Mock.DockerRuns -ne 1 -or $Mock.DockerStarts -ne 0 -or $Mock.PackagingRuns -ne 2) { throw 'Tampered installer did not rerun only packaging' }
     $Mock.State = 'running'
     $Blocked = $false
     try {
@@ -143,9 +151,11 @@ try {
     if ($env:APP_VERSION -ne '9.9.9' -or $env:T3CODE_DESKTOP_VERSION -ne '9.9.9') { throw 'Build changed caller environment' }
     $Completed = Get-Content $Run -Raw | ConvertFrom-Json
     if ($Mock.Preflights -ne 1 -or $Completed.PreflightSha -ne $Mock.BuildSha) { throw 'Build did not validate its pinned source' }
+    & $Workflow -Stage Build -Run $Run
+    if ($Mock.Preflights -ne 1 -or $Mock.FrontendRuns -ne 1 -or $Mock.PackagingRuns -ne 3) { throw 'Successful retry repeated verified stages' }
     $Mock.FailPreflight = $true
     $Failed = $false
-    try { & $Workflow -Stage Build -Run $Run } catch {
+    try { & $Workflow -Stage Build -Run $Run -Rebuild } catch {
         if ($_.Exception.Message -notlike 'Preflight formatting failed*') { throw }
         $Failed = $true
     }
@@ -156,7 +166,7 @@ try {
     $Mock.FailPreflight = $false
     $Mock.FailFrontend = $true
     $Failed = $false
-    try { & $Workflow -Stage Build -Run $Run } catch {
+    try { & $Workflow -Stage Build -Run $Run -Rebuild } catch {
         if ($_.Exception.Message -ne 'simulated frontend failure') { throw }
         $Failed = $true
     }
@@ -169,7 +179,7 @@ try {
         throw 'Different runs must share caches but not source workspaces'
     }
     $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work '.git/as-custom/cache/pnpm-store'))
-    if ($Mock.StorePaths.Count -ne 3 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
+    if ($Mock.StorePaths.Count -ne 4 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }
     Write-Host 'PASS: Git-directory guard before installation; pinned versions; environment restoration; isolated sources; reusable caches; build/resume guards'

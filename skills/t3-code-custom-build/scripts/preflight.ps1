@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'progress.ps1')
+. (Join-Path $PSScriptRoot 'tooling.ps1')
 
 function Invoke-CustomBuildPreflight {
     param(
@@ -39,7 +40,7 @@ function Invoke-CustomBuildPreflight {
         Invoke-BuildStep -Label $Label -Action {
             "vp $($Arguments -join ' ')" | Tee-Object -FilePath $LogPath -Append | Write-Host
             $PSNativeCommandUseErrorActionPreference = $false
-            vp @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
+            Invoke-WorktreeVp -Worktree $Worktree -Arguments $Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append | Out-Host
             if ($LASTEXITCODE -ne 0) {
                 "FAIL: $Label (exit $LASTEXITCODE)" | Tee-Object -FilePath $LogPath -Append | Write-Host
                 throw "$Label failed (exit $LASTEXITCODE); see $LogPath"
@@ -68,10 +69,14 @@ function Invoke-CustomBuildPreflight {
         # The harness flag leaks into subprocess fixtures and makes them look like Electron probes.
         [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $null, 'Process')
         if ($FormatFiles.Count) {
-            Invoke-PreflightCommand 'Preflight formatting' (@('fmt', '--check', '--no-error-on-unmatched-pattern') + $FormatFiles)
+            foreach ($Batch in (Split-BuildFileArguments -Prefix @('fmt', '--check', '--no-error-on-unmatched-pattern') -Files $FormatFiles)) {
+                Invoke-PreflightCommand 'Preflight formatting' $Batch.Arguments
+            }
         }
         if ($CodeFiles.Count) {
-            Invoke-PreflightCommand 'Preflight lint' (@('lint', '--report-unused-disable-directives') + $CodeFiles)
+            foreach ($Batch in (Split-BuildFileArguments -Prefix @('lint', '--report-unused-disable-directives') -Files $CodeFiles)) {
+                Invoke-PreflightCommand 'Preflight lint' $Batch.Arguments
+            }
         }
         foreach ($Package in $Packages) {
             Invoke-PreflightCommand "Preflight typecheck $Package" @('run', '--filter', "./$Package", 'typecheck')
@@ -80,7 +85,9 @@ function Invoke-CustomBuildPreflight {
             Invoke-PreflightCommand 'Preflight typecheck scripts' @('exec', 'tsc-rs', '--project', 'scripts/tsconfig.json', '--noEmit')
         }
         if ($Tests.Count) {
-            Invoke-PreflightCommand 'Preflight focused tests' (@('test', 'run') + $Tests)
+            foreach ($Batch in (Split-BuildFileArguments -Prefix @('test', 'run') -Files $Tests)) {
+                Invoke-PreflightCommand 'Preflight focused tests' $Batch.Arguments
+            }
         }
     } finally {
         [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $PreviousElectronRunAsNode, 'Process')

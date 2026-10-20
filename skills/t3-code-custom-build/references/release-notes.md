@@ -43,6 +43,37 @@ All included.
 - **<branch-suffix> — <coverage>.** <Upstream behavior; remaining custom behavior.> Retained. [published nightly code](https://github.com/pingdotgg/t3code/blob/<nightly-tag>/<path>); [current upstream code](https://github.com/pingdotgg/t3code/blob/<upstream-main-sha>/<path>).
 ```
 
+## Generation input
+
+Supply this JSON to `workflow.ps1 -Stage Notes -Run $Run -FindingsFile <file>`. Repeat `customizations` once per discovered remote branch, including approved skips/removals. Source values and included SHAs come from `run.json`; excluded SHAs are frozen during the overlap check. The generator sorts branches and enforces inventory, dispositions, immutable code evidence and the template. It does not verify the linked code or the truth of an approval.
+
+```json
+{
+  "upstreamSha": "<run.UpstreamSha>",
+  "nightlyTag": "<run.NightlyTag>",
+  "customizations": [
+    {
+      "branch": "customizations/<suffix>",
+      "sha": "<40-character frozen SHA>",
+      "description": "Concrete behavior paragraph, reused when still accurate.",
+      "coverage": "partial",
+      "finding": "What upstream covers and what remains custom.",
+      "disposition": "retained",
+      "evidence": [
+        { "label": "published nightly code", "url": "https://github.com/pingdotgg/t3code/blob/<nightly-tag>/<path>" },
+        { "label": "current upstream code", "url": "https://github.com/pingdotgg/t3code/blob/<upstream-sha>/<path>" }
+      ]
+    }
+  ]
+}
+```
+
+- `coverage`: `full`, `partial`, `absent`, `unreleased`, or `unverified`.
+- `disposition`: `retained`, `skipped`, or `removed`. Full coverage requires `decision: "keep"`, `"skip"`, or `"remove"`, matching the approved disposition. Skips/removals always require that explicit decision.
+- `evidence`: at least `current upstream code` and either `published nightly code` or `published release`. Additional labels: `merged PR #<number>` and `custom code`. Use the frozen main SHA/nightly tag for those code links; encode literal `%` in patch file paths as `%25`.
+- Descriptions/findings are plain-text paragraphs; evidence links belong only in `evidence`.
+- `Notes` writes `release-notes.md` and a frozen findings copy to the run directory. Optional `-NotesFile` selects another output path. `Publish` rejects edited/stale Markdown; revise the findings and regenerate instead.
+
 ## Pre-publication checklist
 
 - Source values match `run.json`, including the timestamp offset and final build SHA. A nightly is a version reference, not necessarily the exact main source used for the build.

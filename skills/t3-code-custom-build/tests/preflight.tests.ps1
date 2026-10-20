@@ -6,16 +6,22 @@ $Log = Join-Path $Root 'preflight.log'
 $Mock = @{ Calls = @(); FailOn = ''; ExitCode = 0 }
 $PreviousElectronRunAsNode = [Environment]::GetEnvironmentVariable('ELECTRON_RUN_AS_NODE', 'Process')
 
-function vp {
+function node {
+    if ($args[0] -notmatch '[\\/]bin[\\/]vp$') { throw 'Preflight did not invoke the worktree-local Node CLI' }
+    $Arguments = @($args | Select-Object -Skip 1)
     if ($env:ELECTRON_RUN_AS_NODE) { throw 'Harness environment leaked into preflight' }
-    $Mock.Calls += ,@($args)
-    $Kind = if ($args[0] -eq 'run' -or $args[0] -eq 'exec') { 'typecheck' } else { $args[0] }
+    $Mock.Calls += ,$Arguments
+    $Kind = if ($Arguments[0] -eq 'run' -or $Arguments[0] -eq 'exec') { 'typecheck' } else { $Arguments[0] }
     $global:LASTEXITCODE = if ($Kind -eq $Mock.FailOn) { $Mock.ExitCode } else { 0 }
     if ($LASTEXITCODE) { Write-Output 'simulated check failure' }
 }
 
 try {
     New-Item -ItemType Directory -Path "$Work/apps/web/src", "$Work/apps/untouched", "$Work/apps/deleted/src", "$Work/scripts" -Force | Out-Null
+    New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
+    Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
+    Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'
+    Set-Content "$Work/.gitignore" 'node_modules/'
     git init --initial-branch=main $Work | Out-Null
     git -C $Work config user.name 'Skill Test'
     git -C $Work config user.email 'skill-test@example.invalid'
