@@ -19,5 +19,10 @@ try {
     $Key = Get-CustomBuildKey -BuildSha source -Version 0.1.1 -MainSha main
     if ($Key -ceq (Get-CustomBuildKey -BuildSha source -Version 0.1.2 -MainSha main) -or
         $Key -ceq (Get-CustomBuildKey -BuildSha source -Version 0.1.1 -MainSha other)) { throw 'Build inputs are absent from checkpoint key' }
-    Write-Host 'PASS: content-verified reuse; source/version/base invalidation; missing/tampered/interrupted checkpoints; failure invalidation'
+    $Config = @{ T3CODE_RELAY_URL = 'https://relay.example.test' }
+    $ConfiguredKey = Get-CustomBuildKey -BuildSha source -Version 0.1.1 -MainSha main -PublicConfig $Config
+    if ($Key -ceq $ConfiguredKey) { throw 'Connect config did not invalidate a disabled build' }
+    $Config.T3CODE_RELAY_URL = 'https://other.example.test'
+    if ($ConfiguredKey -ceq (Get-CustomBuildKey -BuildSha source -Version 0.1.1 -MainSha main -PublicConfig $Config)) { throw 'Changed deployment reused a build key' }
+    Write-Host 'PASS: content-verified reuse; source/version/base/Connect invalidation; missing/tampered/interrupted checkpoints; failure invalidation'
 } finally { Remove-Item -LiteralPath $Root -Recurse -Force }

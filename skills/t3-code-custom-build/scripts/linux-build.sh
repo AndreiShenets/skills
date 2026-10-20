@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 : "${BUILD_VERSION:?}" "${BUILD_SHA:?}" "${SEA_NODE_VERSION:?}" "${VITE_PLUS_VERSION:?}"
+: "${T3CODE_CLERK_PUBLISHABLE_KEY:?}" "${T3CODE_CLERK_JWT_TEMPLATE:?}" "${T3CODE_CLERK_CLI_OAUTH_CLIENT_ID:?}" "${T3CODE_RELAY_URL:?}"
 export CI=true DEBIAN_FRONTEND=noninteractive
 export VP_HOME="/cache/tools/vite-plus-$VITE_PLUS_VERSION" VP_VERSION="$VITE_PLUS_VERSION" VP_NODE_VERSION="$SEA_NODE_VERSION"
 export PATH="/cache/tools/node-$SEA_NODE_VERSION/bin:$VP_HOME/bin:$PATH"
