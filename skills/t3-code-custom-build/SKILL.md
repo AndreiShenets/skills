@@ -24,20 +24,25 @@ Run each stage separately; use the printed `run.json` path as `$Run`. Build work
 
 - `Sync`: merge upstream main into local/fork main; freeze latest upstream nightly's base version and local timestamp.
 - `Merge`: fetch every remote `customizations/*` locally, update selected branches with main, merge into `custom_builds/yyyy_MM_dd_HH_mm`; push. Exclude approved skips and local-only/deleted remote branches; skips persist in `run.json`.
-- `Build`: install dependencies and stamp matching versions, then gate compilation on formatting/lint for changed files, affected-package typechecks, and focused tests. Checks compare the integrated source with the frozen main SHA and write `preflight.log`; retries archive prior logs as `preflight.attempt-NNNN.log`. Failures stop before compilation or packaging. Browser/live tests, including unchanged siblings of modified source, are listed for separate authorized verification. Build Windows/client and Linux x64 runtime, smoke-test Linux, bundle WSL into NSIS. Optional native WSL check: add `-WslDistro <installed-distro>`.
+- `Build`: install dependencies and stamp matching versions, then gate compilation on formatting/lint for changed files, affected-package typechecks, and focused tests. Checks compare the integrated source with the frozen main SHA and write `preflight.log`; rerun checks archive prior logs as `preflight.attempt-NNNN.log`. Browser/live tests, including unchanged siblings of modified source, are listed for separate authorized verification. Build Windows/client and Linux x64 runtime, smoke-test Linux, bundle WSL into NSIS. Optional native WSL check: add `-WslDistro <installed-distro>`.
+
+Retries reuse successful preflight results, Linux archives and installers only when source/version/base/tooling inputs and recorded output hashes still match. Dependencies are installed on each retry; compilation is skipped only when the verified final artifacts are reusable. Use `Build -Rebuild` to force every check/build step. Failed checks stop compilation/packaging. Commands use the build worktree's Vite+ Node entry point and bounded file batches, preserving PowerShell pass-through arguments and long Windows file lists. First install can bootstrap from `$Repo`'s installed Vite+ or a global native `vp`.
 
 Conflicts are agent work: resolve and stage in the printed worktree, then rerun the failed stage automatically; it commits using recorded merge parents without repository hooks. Format only resolved files; validate affected code in the integrated build worktree instead of installing dependencies in disposable merge worktrees. Do not hand conflicts back to the user. Preserve divergent history; no force-push.
 
 Commit reusable fixes to their owning `customizations/*` branches as well as the integrated build; build-only fixes disappear from future runs.
 
-Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs and retained Docker container name are under the run's scratch directory; Linux tools/package/Cargo caches use the reusable `t3-as-custom-linux-cache` volume. Check active processes/container before retrying `Build`.
+Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs, checkpoints and failed-run Docker resources remain available for recovery; Linux tools/package/Cargo caches use the reusable `t3-as-custom-linux-cache` volume. Check active processes/container before retrying `Build`.
 
-Read `run.json`, `preflight.log`, and [the release-note contract](references/release-notes.md). Copy its template into `$NotesFile`, fill it from frozen inputs and verified overlap findings, and complete its pre-publication checklist. This is an agent-checked contract, not a script-enforced gate.
+Read `run.json`, `preflight.log`, and [the release-note contract](references/release-notes.md). Record agent-verified findings/descriptions in `$FindingsFile` using that contract's JSON shape, then generate the notes. Reuse still-accurate approved descriptions; generation cannot judge upstream equivalence or confirm human approval. Preview the generated Markdown and complete the semantic pre-publication checklist.
 
 ```pwsh
-& "$Skill/scripts/workflow.ps1" -Stage Publish -Run $Run -NotesFile $NotesFile
+& "$Skill/scripts/workflow.ps1" -Stage Notes -Run $Run -FindingsFile $FindingsFile
+& "$Skill/scripts/workflow.ps1" -Stage Publish -Run $Run
 ```
 
-`Publish`: upload renamed installer + `SHA256SUMS` to a draft fork prerelease; verify downloaded bytes and tag target; publish without marking latest. Retry the same command to resume matching tags/releases; mismatched inputs stop publication.
+`Notes` saves the findings and generated `release-notes.md` under the run scratch directory. `Publish` verifies the artifact checkpoint and regenerates the expected notes before uploading the renamed installer + `SHA256SUMS` to a draft fork prerelease. It verifies downloaded bytes, tag target and release body, then publishes without marking latest. Mismatched inputs stop publication; edit the findings and rerun `Notes` rather than hand-editing the Markdown. Older runs without checkpoints must rerun `Build` and `Notes` first.
+
+After verified publication, remove only this run's stopped Docker container and its verified `/build` volume. Keep the shared cache, artifacts, worktree and logs. Failed/unpublished runs are retained. Cleanup failures set `CleanupPending` without losing `ReleaseUrl`; repeat `Publish` to retry cleanup without reuploading. Active/mismatched containers and unverified orphan volumes require investigation, not forced removal or pruning.
 
 Report release URL, installer path, version, main/build SHAs, checks, installation/update caveats. Link to the release notes for overlap findings.

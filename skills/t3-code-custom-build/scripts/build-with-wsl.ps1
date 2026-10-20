@@ -3,14 +3,19 @@ param(
     [Parameter(Mandatory)][string]$Scratch,
     [Parameter(Mandatory)][ValidatePattern('^\d{4}_\d{2}_\d{2}_\d{2}_\d{2}$')][string]$RunId,
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
-    [Parameter(Mandatory)][string]$OutputDir
+    [Parameter(Mandatory)][string]$OutputDir,
+    [string]$BuildKey,
+    [switch]$Rebuild
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'git.ps1')
 . (Join-Path $PSScriptRoot 'progress.ps1')
+. (Join-Path $PSScriptRoot 'tooling.ps1')
+. (Join-Path $PSScriptRoot 'checkpoints.ps1')
 Assert-Clean $Worktree
 $BuildSha = (git -C $Worktree rev-parse HEAD).Trim()
+if (!$BuildKey) { $BuildKey = Get-CustomBuildKey -BuildSha $BuildSha -Version $Version -RunId $RunId }
 $SourceTar = Join-Path $Scratch "source-$BuildSha.tar"
 $Client = Join-Path $Worktree 'apps/server/dist/client'
 if (!(Test-Path (Join-Path $Client 'index.html'))) { throw 'Build desktop/server/web first' }
@@ -29,6 +34,8 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $OutputDir = (Resolve-Path $OutputDir).Path
 git -C $Worktree archive --format=tar "--output=$SourceTar" $BuildSha
 $Name = "t3-as-custom-$($RunId.Replace('_', '-'))"
+$Archive = Join-Path $OutputDir "t3-$Version-linux-x64.tar.gz"
+$Installer = Join-Path $OutputDir "T3-Code-$Version-x64.exe"
 $LinuxScript = Join-Path $PSScriptRoot 'linux-build.sh'
 $Existing = docker ps --all --filter "name=^/$Name$" --format '{{.ID}}'
 if ($Existing) {
@@ -38,11 +45,17 @@ if ($Existing) {
     if ($ContainerEnv -notcontains "BUILD_SHA=$BuildSha" -or $ContainerEnv -notcontains "BUILD_VERSION=$Version") {
         throw 'Existing container belongs to different build inputs; choose a new run ID'
     }
+}
+if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $BuildKey -Files @($Archive))) {
+    Write-Host 'Reusing verified Linux archive'
+} elseif ($Existing) {
+    Clear-BuildCheckpoint -Scratch $Scratch -Name linux
     Invoke-BuildStep -Label 'Linux runtime (resume cached container)' -Action {
         docker start --attach $Name 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
         if ($LASTEXITCODE -ne 0) { throw 'Linux container failed' }
     }
 } else {
+    Clear-BuildCheckpoint -Scratch $Scratch -Name linux
     Invoke-BuildStep -Label 'Linux runtime (shared tools, package and Cargo caches)' -Action {
         docker run --name $Name --platform linux/amd64 `
         --env "BUILD_VERSION=$Version" --env "BUILD_SHA=$BuildSha" `
@@ -57,18 +70,25 @@ if ($Existing) {
         if ($LASTEXITCODE -ne 0) { throw 'Linux container failed' }
     }
 }
-$Archive = Join-Path $OutputDir "t3-$Version-linux-x64.tar.gz"
 if (!(Test-Path $Archive)) { throw 'Linux archive missing' }
 if ((git -C $Worktree rev-parse HEAD).Trim() -ne $BuildSha) { throw 'Source changed during Linux build' }
 Assert-Clean $Worktree
+Save-BuildCheckpoint -Scratch $Scratch -Name linux -Key $BuildKey -Files @($Archive)
+if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name installer -Key $BuildKey -Files @($Archive, $Installer))) {
+    Write-Host 'Reusing verified Windows installer'
+    return
+}
+Clear-BuildCheckpoint -Scratch $Scratch -Name installer
 Push-Location $Worktree
 try {
     Invoke-BuildStep -Label 'Windows NSIS packaging and payload validation' -Action {
-        vp run dist:desktop:win:x64 --skip-build --build-version $Version --wsl-runtime $Archive --output-dir $OutputDir 2>&1 |
+        Invoke-WorktreeVp -Worktree $Worktree -Arguments @('run', 'dist:desktop:win:x64', '--skip-build', '--build-version', $Version, '--wsl-runtime', $Archive, '--output-dir', $OutputDir) 2>&1 |
             Tee-Object (Join-Path $Scratch 'windows-build.log')
         if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
     }
 } finally { Pop-Location }
 if (!(Test-Path (Join-Path $OutputDir "T3-Code-$Version-x64.exe"))) { throw 'Installer missing' }
+if ((git -C $Worktree rev-parse HEAD).Trim() -ne $BuildSha) { throw 'Source changed during packaging' }
 Assert-Clean $Worktree
+Save-BuildCheckpoint -Scratch $Scratch -Name installer -Key $BuildKey -Files @($Archive, $Installer)
 Write-Host "Built $BuildSha => $OutputDir"

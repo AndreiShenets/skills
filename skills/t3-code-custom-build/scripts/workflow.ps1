@@ -1,8 +1,10 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('Sync', 'Merge', 'Build', 'Publish')][string]$Stage,
+    [Parameter(Mandatory)][ValidateSet('Sync', 'Merge', 'Build', 'Notes', 'Publish')][string]$Stage,
     [string]$Repo,
     [string]$Run,
     [string]$NotesFile,
+    [string]$FindingsFile,
+    [switch]$Rebuild,
     [string]$WslDistro,
     [ValidatePattern('^customizations/.+')][string[]]$SkipBranches = @()
 )
@@ -11,6 +13,10 @@ $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'git.ps1')
 . (Join-Path $PSScriptRoot 'progress.ps1')
 . (Join-Path $PSScriptRoot 'preflight.ps1')
+. (Join-Path $PSScriptRoot 'checkpoints.ps1')
+. (Join-Path $PSScriptRoot 'release-notes.ps1')
+. (Join-Path $PSScriptRoot 'cleanup.ps1')
+if ($Rebuild -and $Stage -ne 'Build') { throw 'Use Rebuild only with Build' }
 if ($PSBoundParameters.ContainsKey('SkipBranches') -and ($Stage -ne 'Sync' -or $Run)) {
     throw 'Choose SkipBranches when starting Sync; existing runs keep their saved selection'
 }
@@ -49,7 +55,10 @@ Write-Host "Run: $Run"
 try { $RunLock = [IO.File]::Open("$Run.lock", 'OpenOrCreate', 'ReadWrite', 'None') }
 catch { throw "Run is already active or cannot be locked: $Run" }
 try {
-    $State = Get-Content -LiteralPath $Run -Raw | ConvertFrom-Json -AsHashtable
+    $RunJson = Get-Content -LiteralPath $Run -Raw
+    $State = $RunJson | ConvertFrom-Json -AsHashtable
+    # ConvertFrom-Json otherwise turns ISO dates into local DateTime values and can lose the original offset.
+    if ($RunJson -match '"Timestamp"\s*:\s*"([^"]+)"') { $State.Timestamp = $Matches[1] }
     if (!$State.Contains('Integrated')) { $State.Integrated = [ordered]@{} }
     if (!$State.Contains('SkippedBranches')) { $State.SkippedBranches = @() }
     if ($Stage -in @('Merge', 'Build')) { Assert-BuildWorktreeLocation -Path $State.Work }
@@ -145,7 +154,7 @@ try {
         Push-Location $State.Work
         try {
             Invoke-BuildStep -Label 'Windows dependencies (shared store)' -Action {
-                vp install --frozen-lockfile -- --store-dir (Join-Path $State.Cache 'pnpm-store')
+                Invoke-WorktreeVp -Worktree $State.Work -BootstrapRepo $State.Repo -Arguments @('install', '--frozen-lockfile', '--', '--store-dir', (Join-Path $State.Cache 'pnpm-store'))
             }
             node scripts/update-release-package-versions.ts $State.Version
             $Manifests = @('apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json')
@@ -157,22 +166,39 @@ try {
             git push origin $State.BuildBranch
             Assert-Clean $State.Work
             $State.BuildSha = (git rev-parse HEAD).Trim()
+            $State.BuildKey = Get-CustomBuildKey -BuildSha $State.BuildSha -Version $State.Version -MainSha $State.MainSha -RunId $State.RunId
             Save-Run
-            Invoke-CustomBuildPreflight -Worktree $State.Work -BaseRef $State.MainSha -LogPath (Join-Path $State.Scratch 'preflight.log')
+            $PreflightLog = Join-Path $State.Scratch 'preflight.log'
+            if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $State.BuildKey -Files @($PreflightLog))) {
+                Write-Host 'Reusing verified preflight results (browser/live checks remain separate)'
+            } else {
+                Clear-BuildCheckpoint -Scratch $State.Scratch -Name preflight
+                Invoke-CustomBuildPreflight -Worktree $State.Work -BaseRef $State.MainSha -LogPath $PreflightLog
+                Assert-Clean $State.Work
+                if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during preflight' }
+                Save-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $State.BuildKey -Files @($PreflightLog)
+            }
             Assert-Clean $State.Work
             if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during preflight' }
             $State.PreflightSha = $State.BuildSha
             Save-Run
-            $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
-            try {
-                $env:APP_VERSION = $State.Version
-                Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
-                    vp run build:desktop
-                    node scripts/apply-web-brand-assets.ts production apps/server/dist/client
-                }
-            } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
+            $Archive = Join-Path $State.Out "t3-$($State.Version)-linux-x64.tar.gz"
+            $Installer = Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe"
+            $ReuseInstaller = !$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name installer -Key $State.BuildKey -Files @($Archive, $Installer))
+            if (!$ReuseInstaller) {
+                $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
+                try {
+                    $env:APP_VERSION = $State.Version
+                    Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
+                        Invoke-WorktreeVp -Worktree $State.Work -Arguments @('run', 'build:desktop')
+                        node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+                    }
+                } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
+            }
         } finally { Pop-Location }
-        & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out
+        if (!$ReuseInstaller) {
+            & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out -BuildKey $State.BuildKey -Rebuild:$Rebuild
+        } else { Write-Host 'Reusing verified installer and Linux runtime' }
         if ($WslDistro) {
             $Script = (wsl.exe -d $WslDistro -- wslpath -u (Join-Path $PSScriptRoot 'wsl-smoke.sh')).Trim()
             $Archive = (wsl.exe -d $WslDistro -- wslpath -u (Join-Path $State.Out "t3-$($State.Version)-linux-x64.tar.gz")).Trim()
@@ -184,16 +210,51 @@ try {
         $State.Built = $true
         Save-Run
     }
+    Notes {
+        if (!$State.BuildSha) { throw 'Complete Build before generating release notes' }
+        if (!$FindingsFile) { throw 'Supply -FindingsFile <verified-findings.json>' }
+        $FindingsFile = (Resolve-Path -LiteralPath $FindingsFile).Path
+        $Body = Get-CustomReleaseNotes -State $State -FindingsFile $FindingsFile
+        $SavedFindings = Join-Path $State.Scratch 'release-findings.json'
+        if ($FindingsFile -ne $SavedFindings) { Copy-Item -LiteralPath $FindingsFile -Destination $SavedFindings }
+        $State.FindingsFile = $SavedFindings
+        $State.NotesFile = if ($NotesFile) { [IO.Path]::GetFullPath($NotesFile) } else { Join-Path $State.Scratch 'release-notes.md' }
+        [IO.File]::WriteAllText($State.NotesFile, $Body, [Text.UTF8Encoding]::new($false))
+        Save-Run
+        Write-Host "Release notes: $($State.NotesFile)"
+    }
     Publish {
         if (!$State.Built) { throw 'Complete Build first' }
-        if ($State.ReleaseUrl) { Write-Host $State.ReleaseUrl; break }
+        if ($State.ReleaseUrl) {
+            if ($State.CleanupPending -ne $false) {
+                try { Remove-PublishedBuildResources -State $State -SaveState { Save-Run } }
+                catch { $State.CleanupPending = $true; Save-Run; Write-Warning "Release is published; cleanup pending: $_" }
+            }
+            Write-Host $State.ReleaseUrl
+            break
+        }
         if ($State.PreflightSha -ne $State.BuildSha) { throw 'Complete Build with passing preflight for this source first' }
+        $Archive = Join-Path $State.Out "t3-$($State.Version)-linux-x64.tar.gz"
+        $Installer = Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe"
+        if (!$State.BuildKey -or !$State.BuildKey.StartsWith("$($State.BuildSha)-") -or
+            !(Test-BuildCheckpoint -Scratch $State.Scratch -Name installer -Key $State.BuildKey -Files @($Archive, $Installer))) {
+            throw 'Complete Build with verified artifact checkpoints before publication'
+        }
+        if (!$State.FindingsFile) { throw 'Generate release notes with Notes -FindingsFile before publication' }
+        if (!$NotesFile) { $NotesFile = $State.NotesFile }
         if (!$NotesFile -or !(Test-Path -LiteralPath $NotesFile)) { throw 'Supply -NotesFile <release-notes.md>' }
+        $ExpectedNotes = Get-CustomReleaseNotes -State $State -FindingsFile $State.FindingsFile
+        if ((Get-Content -LiteralPath $NotesFile -Raw).Replace("`r`n", "`n").Trim() -cne $ExpectedNotes.Trim()) {
+            throw 'Release notes disagree with frozen inputs/findings; regenerate Notes'
+        }
         Assert-Clean $State.Work
         if ((git -C $State.Work rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed after build' }
         . (Join-Path $PSScriptRoot 'publish.ps1')
         $State.ReleaseUrl = Publish-CustomRelease -State $State -NotesFile $NotesFile
+        $State.CleanupPending = $true
         Save-Run
+        try { Remove-PublishedBuildResources -State $State -SaveState { Save-Run } }
+        catch { Write-Warning "Release is published; cleanup pending: $_" }
         Write-Host $State.ReleaseUrl
     }
     } }
