@@ -214,7 +214,7 @@ try {
     if (@($Mock.CacheMounts | Sort-Object -Unique).Count -ne 1 -or @($Mock.SourceMounts | Sort-Object -Unique).Count -ne 2) {
         throw 'Different runs must share caches but not source workspaces'
     }
-    $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work '.git/as-custom/cache/pnpm-store'))
+    $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Root 'work-as-custom/cache/pnpm-store'))
     if ($Mock.StorePaths.Count -ne 4 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }

@@ -12,10 +12,16 @@ function Invoke-BuildStep {
     }
 }
 
-function Get-BuildCacheDirectory {
+function Get-BuildDataDirectory {
     param([Parameter(Mandatory)][string]$Worktree)
     $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
-    Join-Path $Common 'as-custom/cache'
+    $MainCheckout = Split-Path $Common -Parent
+    Join-Path (Split-Path $MainCheckout -Parent) ((Split-Path $MainCheckout -Leaf) + '-as-custom')
+}
+
+function Get-BuildCacheDirectory {
+    param([Parameter(Mandatory)][string]$Worktree)
+    Join-Path (Get-BuildDataDirectory -Worktree $Worktree) 'cache'
 }
 
 function Assert-BuildWorktreeLocation {
@@ -30,9 +36,7 @@ function Get-BuildWorktreeDirectory {
         [Parameter(Mandatory)][string]$Worktree,
         [Parameter(Mandatory)][ValidatePattern('^[\w-]+$')][string]$RunName
     )
-    $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
-    $MainCheckout = Split-Path $Common -Parent
-    $Root = Join-Path (Split-Path $MainCheckout -Parent) ((Split-Path $MainCheckout -Leaf) + '-as-custom')
+    $Root = Get-BuildDataDirectory -Worktree $Worktree
     $Path = Join-Path $Root $RunName
     Assert-BuildWorktreeLocation -Path $Path
     $Path
