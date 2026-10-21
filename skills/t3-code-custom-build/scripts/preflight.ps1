@@ -85,6 +85,8 @@ function Invoke-CustomBuildPreflight {
             Invoke-PreflightCommand 'Preflight typecheck scripts' @('exec', 'tsc-rs', '--project', 'scripts/tsconfig.json', '--noEmit')
         }
         if ($Tests.Count) {
+            # Electron's lazy first import can race when test workers install it concurrently.
+            Invoke-PreflightCommand 'Preflight Electron runtime' @('run', '--filter', './apps/desktop', 'ensure:electron')
             foreach ($Batch in (Split-BuildFileArguments -Prefix @('test', 'run') -Files $Tests)) {
                 Invoke-PreflightCommand 'Preflight focused tests' $Batch.Arguments
             }

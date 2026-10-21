@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
-$Root = Join-Path 'C:/Temp/opencode' ("t3-skill-preflight-test-" + [guid]::NewGuid().ToString('N'))
+$Root = Join-Path ([IO.Path]::GetTempPath()) ("t3-skill-preflight-test-" + [guid]::NewGuid().ToString('N'))
 $Work = Join-Path $Root 'work'
 $Log = Join-Path $Root 'preflight.log'
 $Mock = @{ Calls = @(); FailOn = ''; ExitCode = 0 }
@@ -11,13 +11,15 @@ function node {
     $Arguments = @($args | Select-Object -Skip 1)
     if ($env:ELECTRON_RUN_AS_NODE) { throw 'Harness environment leaked into preflight' }
     $Mock.Calls += ,$Arguments
-    $Kind = if ($Arguments[0] -eq 'run' -or $Arguments[0] -eq 'exec') { 'typecheck' } else { $Arguments[0] }
+    $Kind = if ($Arguments[-1] -eq 'ensure:electron') { 'electron' }
+        elseif ($Arguments[0] -eq 'run' -or $Arguments[0] -eq 'exec') { 'typecheck' }
+        else { $Arguments[0] }
     $global:LASTEXITCODE = if ($Kind -eq $Mock.FailOn) { $Mock.ExitCode } else { 0 }
     if ($LASTEXITCODE) { Write-Output 'simulated check failure' }
 }
 
 try {
-    New-Item -ItemType Directory -Path "$Work/apps/web/src", "$Work/apps/untouched", "$Work/apps/deleted/src", "$Work/scripts" -Force | Out-Null
+    New-Item -ItemType Directory -Path "$Work/apps/web/src", "$Work/apps/desktop", "$Work/apps/untouched", "$Work/apps/deleted/src", "$Work/scripts" -Force | Out-Null
     New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
     Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
     Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'
@@ -28,6 +30,7 @@ try {
     git -C $Work config commit.gpgsign false
     git -C $Work config core.hooksPath (Join-Path $Root 'empty-hooks')
     Set-Content "$Work/apps/web/package.json" '{"name":"web","scripts":{"typecheck":"tsc-rs --noEmit"}}'
+    Set-Content "$Work/apps/desktop/package.json" '{"name":"desktop","scripts":{"ensure:electron":"node scripts/ensure-electron-runtime.mjs"}}'
     Set-Content "$Work/apps/untouched/package.json" '{"name":"untouched","scripts":{"typecheck":"tsc-rs --noEmit"}}'
     Set-Content "$Work/apps/deleted/package.json" '{"name":"deleted","scripts":{"typecheck":"tsc-rs --noEmit"}}'
     Set-Content "$Work/apps/deleted/src/removed.ts" 'deleted source'
@@ -56,9 +59,11 @@ try {
     $Location = (Get-Location).Path
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath $Log
     if ($env:ELECTRON_RUN_AS_NODE -ne '1' -or (Get-Location).Path -ne $Location) { throw 'Caller state was not restored' }
-    if ($Mock.Calls.Count -ne 6) { throw 'Expected formatting, lint, package/scripts typechecks, and focused tests' }
+    if ($Mock.Calls.Count -ne 7) { throw 'Expected formatting, lint, package/scripts typechecks, Electron initialization, and focused tests' }
     if ($Mock.Calls[0][0] -ne 'fmt' -or $Mock.Calls[1][0] -ne 'lint' -or $Mock.Calls[-1][0] -ne 'test') { throw 'Wrong validation order' }
-    $Typecheck = @($Mock.Calls | Where-Object { $_[0] -eq 'run' })
+    if (($Mock.Calls[-2] -join ' ') -cne 'run --filter ./apps/desktop ensure:electron') { throw 'Initialize the checkout Electron runtime before focused tests' }
+    if ((Get-Content $Log -Raw) -notmatch 'PASS: Preflight Electron runtime') { throw 'Missing Electron initialization report' }
+    $Typecheck = @($Mock.Calls | Where-Object { $_[0] -eq 'run' -and $_[-1] -eq 'typecheck' })
     if ($Typecheck.Count -ne 2 -or $Typecheck[0][2] -ne './apps/deleted' -or $Typecheck[1][2] -ne './apps/web') {
         throw 'Typechecks must cover affected packages, including deletions, without checking unrelated packages'
     }
@@ -75,7 +80,7 @@ try {
     if ((Get-Content $Log -Raw) -notmatch 'PASS: Preflight focused tests') { throw 'Missing successful-check report' }
 
     $Attempt = 0
-    foreach ($Kind in @('fmt', 'lint', 'typecheck', 'test')) {
+    foreach ($Kind in @('fmt', 'lint', 'typecheck', 'electron', 'test')) {
         $PreviousLog = Get-Content $Log -Raw
         $Attempt++
         $Mock.Calls = @()
@@ -97,9 +102,33 @@ try {
     $FailedLog = Get-Content $Log -Raw
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef HEAD -LogPath $Log
     if ($Mock.Calls.Count) { throw 'Empty scopes must not run repository-wide checks' }
-    if ((Get-Content (Join-Path $Root 'preflight.attempt-0005.log') -Raw) -cne $FailedLog) { throw 'Successful retry lost the failed test log' }
+    if ((Get-Content (Join-Path $Root 'preflight.attempt-0006.log') -Raw) -cne $FailedLog) { throw 'Successful retry lost the failed test log' }
     if ((Get-Content (Join-Path $Root 'preflight.attempt-0001.log') -Raw) -notmatch 'PASS: Preflight focused tests') { throw 'Later retries changed an earlier archive' }
-    Write-Host 'PASS: scoped checks; unchanged browser/live siblings; numbered retry logs; nonzero exit guards; environment restoration'
+
+    $SplitArguments = ${function:Split-BuildFileArguments}
+    function Split-BuildFileArguments {
+        param([string[]]$Prefix, [string[]]$Files)
+        & $SplitArguments -Prefix $Prefix -Files $Files -MaxCharacters 70
+    }
+    $Mock.Calls = @()
+    Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath (Join-Path $Root 'batched.log')
+    $TestBatches = @($Mock.Calls | Where-Object { $_[0] -eq 'test' })
+    $Initializations = @($Mock.Calls | Where-Object { $_[-1] -eq 'ensure:electron' })
+    if ($TestBatches.Count -lt 2 -or $Initializations.Count -ne 1) { throw 'Initialize Electron once, not once per focused-test batch' }
+    $FirstTest = @($Mock.Calls | ForEach-Object { $_[0] }).IndexOf('test')
+    if ($Mock.Calls[$FirstTest - 1][-1] -ne 'ensure:electron') { throw 'Batched tests started before Electron initialization' }
+    Set-Item Function:Split-BuildFileArguments $SplitArguments
+
+    $NoTestBase = (git -C $Work rev-parse HEAD).Trim()
+    Set-Content "$Work/README.md" 'Documentation-only customization'
+    git -C $Work add README.md
+    git -C $Work commit -m documentation | Out-Null
+    $Mock.Calls = @()
+    [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $null, 'Process')
+    Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $NoTestBase -LogPath (Join-Path $Root 'no-tests.log')
+    if ($Mock.Calls.Count -ne 1 -or $Mock.Calls[0][0] -ne 'fmt') { throw 'Scopes without tests must not initialize Electron' }
+    if ($env:ELECTRON_RUN_AS_NODE -or (Get-Location).Path -ne $Location) { throw 'An unset harness flag or caller location was not restored' }
+    Write-Host 'PASS: scoped checks; single Electron initialization before batches; initialization failure guard; retry logs; environment restoration'
 } finally {
     [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $PreviousElectronRunAsNode, 'Process')
     Remove-Item -LiteralPath $Root -Recurse -Force
