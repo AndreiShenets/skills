@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory)][string]$OutputDir,
     [string]$BuildKey,
+    [string]$MainSha,
+    [ValidatePattern('^sha256:[a-f0-9]{64}$')][string]$LinuxImageId,
     [System.Collections.IDictionary]$PublicConfig,
     [switch]$Rebuild
 )
@@ -15,10 +17,13 @@ $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'tooling.ps1')
 . (Join-Path $PSScriptRoot 'checkpoints.ps1')
 . (Join-Path $PSScriptRoot 'public-config.ps1')
+. (Join-Path $PSScriptRoot 'linux-cache.ps1')
 Assert-Clean $Worktree
 $BuildSha = (git -C $Worktree rev-parse HEAD).Trim()
 if (!$PublicConfig) { $PublicConfig = Get-T3ConnectPublicConfig -Worktree $Worktree }
-if (!$BuildKey) { $BuildKey = Get-CustomBuildKey -BuildSha $BuildSha -Version $Version -RunId $RunId -PublicConfig $PublicConfig }
+if (!$LinuxImageId) { $LinuxImageId = Get-LinuxBuildImage -Worktree $Worktree }
+if (!$BuildKey) { $BuildKey = Get-CustomBuildKey -Stage installer -BuildSha $BuildSha -MainSha $MainSha -Version $Version -RunId $RunId -PublicConfig $PublicConfig -ToolchainIdentity $LinuxImageId }
+$LinuxKey = Get-CustomBuildKey -Stage linux -BuildSha $BuildSha -MainSha $MainSha -Version $Version -RunId $RunId -PublicConfig $PublicConfig -ToolchainIdentity $LinuxImageId
 $ConnectArgs = @($PublicConfig.Keys | Sort-Object | ForEach-Object { '--env'; "$_=$($PublicConfig[$_])" })
 $SourceTar = Join-Path $Scratch "source-$BuildSha.tar"
 $Client = Join-Path $Worktree 'apps/server/dist/client'
@@ -30,6 +35,8 @@ Push-Location $Worktree
 try { $VpVersion = (node -p "require('vite-plus/package.json').version").Trim() }
 finally { Pop-Location }
 if ($VpVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Unexpected Vite+ version' }
+$CacheNamespace = Get-LinuxCacheNamespace -Worktree $Worktree
+$LinuxInputs = Get-LinuxBuildInputs -ImageId $LinuxImageId -SeaNode $SeaNode -VpVersion $VpVersion -CacheNamespace $CacheNamespace
 Push-Location (Join-Path $Worktree 'scripts')
 try {
     node --input-type=module -e 'import * as E from "effect/Effect"; import * as N from "@effect/platform-node/NodeServices"; import { preflightWindowsDesktopBuild as check } from "./build-desktop-artifact.ts"; await E.runPromise(check({arch:"x64",bundlesWslRuntime:true}).pipe(E.scoped,E.provide(N.layer)));'
@@ -52,8 +59,16 @@ if ($Existing) {
     foreach ($Key in $PublicConfig.Keys) {
         if ($ContainerEnv -cnotcontains "${Key}=$($PublicConfig[$Key])") { throw 'Existing container has different T3 Connect configuration; choose a new run ID' }
     }
+    $ContainerImage = (docker inspect --format '{{.Image}}' $Name).Trim()
+    if ($ContainerImage -cne $LinuxImageId -or $ContainerEnv -cnotcontains "LINUX_BUILD_INPUTS=$LinuxInputs" -or
+        $ContainerEnv -cnotcontains "SEA_NODE_VERSION=$SeaNode" -or $ContainerEnv -cnotcontains "VITE_PLUS_VERSION=$VpVersion" -or
+        $ContainerEnv -cnotcontains "LINUX_CACHE_NAMESPACE=$CacheNamespace") {
+        throw 'Existing container has different Linux helper/tooling inputs; see references/caching.md#recover-a-retained-container to reset this run safely, then retry Build'
+    }
 }
-if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $BuildKey -Files @($Archive))) {
+$RebuildFile = Join-Path $Scratch "linux-rebuild-$RunId.txt"
+[IO.File]::WriteAllText($RebuildFile, $(if ($Rebuild) { '1' } else { '0' }))
+if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $LinuxKey -Files @($Archive))) {
     Write-Host 'Reusing verified Linux archive'
 } elseif ($Existing) {
     Clear-BuildCheckpoint -Scratch $Scratch -Name linux
@@ -67,21 +82,23 @@ if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name linux -Key $Bui
         docker run --name $Name --platform linux/amd64 `
         --env "BUILD_VERSION=$Version" --env "BUILD_SHA=$BuildSha" `
         --env "SEA_NODE_VERSION=$SeaNode" --env "VITE_PLUS_VERSION=$VpVersion" `
+        --env "LINUX_BUILD_INPUTS=$LinuxInputs" --env "LINUX_CACHE_NAMESPACE=$CacheNamespace" `
         @ConnectArgs `
         --mount "type=volume,source=$Name,target=/build" `
         --mount 'type=volume,source=t3-as-custom-linux-cache,target=/cache' `
         --mount "type=bind,source=$SourceTar,target=/input/source.tar,readonly" `
         --mount "type=bind,source=$LinuxScript,target=/input/build.sh,readonly" `
+        --mount "type=bind,source=$RebuildFile,target=/input/rebuild,readonly" `
         --mount "type=bind,source=$Client,target=/input/client,readonly" `
         --mount "type=bind,source=$OutputDir,target=/out" `
-        rust:bookworm bash /input/build.sh 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
+        $LinuxImageId bash /input/build.sh 2>&1 | Tee-Object (Join-Path $Scratch 'linux-build.log')
         if ($LASTEXITCODE -ne 0) { throw 'Linux container failed' }
     }
 }
 if (!(Test-Path $Archive)) { throw 'Linux archive missing' }
 if ((git -C $Worktree rev-parse HEAD).Trim() -ne $BuildSha) { throw 'Source changed during Linux build' }
 Assert-Clean $Worktree
-Save-BuildCheckpoint -Scratch $Scratch -Name linux -Key $BuildKey -Files @($Archive)
+Save-BuildCheckpoint -Scratch $Scratch -Name linux -Key $LinuxKey -Files @($Archive)
 if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $Scratch -Name installer -Key $BuildKey -Files @($Archive, $Installer))) {
     Write-Host 'Reusing verified Windows installer'
     return
