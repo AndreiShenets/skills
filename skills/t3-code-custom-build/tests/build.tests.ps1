@@ -114,7 +114,7 @@ try {
     New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
     Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
     Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'
-    Set-Content "$Work/.gitignore" 'node_modules/'
+    Set-Content "$Work/.gitignore" @('node_modules/', 'release/')
     foreach ($Package in @('apps/server', 'apps/desktop', 'apps/web', 'packages/contracts')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Work $Package) | Out-Null
         Set-Content (Join-Path $Work "$Package/package.json") '{"version":"0.1.1"}'
@@ -214,7 +214,7 @@ try {
     if (@($Mock.CacheMounts | Sort-Object -Unique).Count -ne 1 -or @($Mock.SourceMounts | Sort-Object -Unique).Count -ne 2) {
         throw 'Different runs must share caches but not source workspaces'
     }
-    $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Root 'work-as-custom/cache/pnpm-store'))
+    $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work 'release/as-custom/cache/pnpm-store'))
     if ($Mock.StorePaths.Count -ne 4 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }

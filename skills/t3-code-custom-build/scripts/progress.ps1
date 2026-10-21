@@ -16,7 +16,7 @@ function Get-BuildDataDirectory {
     param([Parameter(Mandatory)][string]$Worktree)
     $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
     $MainCheckout = Split-Path $Common -Parent
-    Join-Path (Split-Path $MainCheckout -Parent) ((Split-Path $MainCheckout -Leaf) + '-as-custom')
+    Join-Path $MainCheckout 'release/as-custom'
 }
 
 function Get-BuildCacheDirectory {
