@@ -40,3 +40,36 @@ Save again from the final run findings after `Notes` if merging changed customiz
 - `Build -Rebuild` bypasses checkpoints and forces fresh Rust target outputs for that run. Run-specific sources, containers and `/build` volumes remain isolated. Publication cleanup preserves shared caches and the prepared image.
 
 Artifact checkpoints remain per run; new runs share research, downloads and Rust compilation caches, not another run's installer or approvals.
+
+## Recover a retained container
+
+Upgrading the skill can invalidate a retained Linux container (including legacy containers without `LINUX_BUILD_INPUTS`). Keep the same `run.json` and build branch: reset only that run's stopped container and private `/build` volume, then retry `Build`. Successful Windows/preflight checkpoints can still be reused.
+
+Inspect and validate first; these checks mirror publication cleanup. If any check fails, investigate rather than removing resources.
+
+```pwsh
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+$State = Get-Content -LiteralPath $Run -Raw | ConvertFrom-Json
+if ($State.RunId -notmatch '^\d{4}_\d{2}_\d{2}_\d{2}_\d{2}$') { throw 'Invalid run ID' }
+$Name = "t3-as-custom-$($State.RunId.Replace('_', '-'))"
+$Container = docker inspect --format '{{json .}}' $Name | ConvertFrom-Json
+$Mount = @($Container.Mounts | Where-Object Destination -CEQ '/build')
+if ($Container.Name -cne "/$Name" -or $Container.State.Status -notin @('exited', 'created') -or
+    $Container.Config.Env -cnotcontains "BUILD_SHA=$($State.BuildSha)" -or
+    $Container.Config.Env -cnotcontains "BUILD_VERSION=$($State.Version)" -or
+    $Mount.Count -ne 1 -or $Mount[0].Type -cne 'volume' -or $Mount[0].Name -cne $Name) {
+    throw 'Unverified or active build resources; leave them intact'
+}
+$Container | Select-Object Name, State, Mounts
+```
+
+Show the exact resource names and get explicit user approval before discarding this private Linux build workspace. After approval only:
+
+```pwsh
+docker rm $Name
+docker volume rm $Name
+& "$Skill/scripts/workflow.ps1" -Stage Build -Run $Run
+```
+
+Use no force/prune options. Leave `t3-as-custom-linux-cache`, prepared images, source checkouts, artifacts and `run.json` intact. If removal is interrupted or an orphaned volume's ownership cannot be verified, investigate before retrying. This recovery preserves the run ID and does not require a new Sync/Merge.

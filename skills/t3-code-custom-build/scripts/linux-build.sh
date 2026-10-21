@@ -54,6 +54,8 @@ echo "[$(date +%T)] Linux dependencies (shared store)"
 vp install --frozen-lockfile --ignore-scripts -- --store-dir /cache/pnpm-store
 echo "[$(date +%T)] Linux executable and resource monitor"
 APP_VERSION="$BUILD_VERSION" node apps/server/scripts/cli.ts build-exe --verbose
+# Replace generated client output so resumed containers cannot keep removed assets.
+rm -rf -- apps/server/dist/client
 mkdir -p apps/server/dist/client
 cp -a /input/client/. apps/server/dist/client/
 target=x86_64-unknown-linux-gnu

@@ -16,6 +16,19 @@ $ConnectConfig = [ordered]@{
 }
 $PreviousConnect = @{}
 foreach ($Key in $ConnectConfig.Keys) { $PreviousConnect[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process') }
+$Git = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+
+function git {
+    # Git transport is covered by git.tests.ps1. Avoid intermittent MSYS shell
+    # startup failures for local receive-pack while testing build orchestration.
+    if ($args[0] -ceq 'push') {
+        if ($args.Count -ne 3 -or $args[1] -cne 'origin' -or $args[2] -cne 'main') { throw 'Unexpected build push' }
+        $global:LASTEXITCODE = 0
+        return
+    }
+    & $Git @args
+    $global:LASTEXITCODE = $LASTEXITCODE
+}
 
 function Assert-ConnectEnvironment {
     foreach ($Key in $ConnectConfig.Keys) {
@@ -155,6 +168,14 @@ try {
         $ConfigBlocked = $true
     } finally { $ConnectConfig.T3CODE_CLERK_JWT_TEMPLATE = 'fixture-template' }
     if (!$ConfigBlocked -or $Mock.DockerStarts -or $Mock.PackagingRuns -ne 2) { throw 'Mismatched Connect container was reused' }
+    $PreviousLinuxEnv = $Mock.LinuxEnv
+    $Mock.LinuxEnv = @($Mock.LinuxEnv | Where-Object { $_ -notlike 'LINUX_BUILD_INPUTS=*' })
+    $ToolingBlocked = $false
+    try { & $Helper -Worktree $Work -Scratch $Scratch -RunId 2026_10_17_15_39 -Version 0.1.1 -OutputDir $Out } catch {
+        if ($_.Exception.Message -notlike 'Existing container has different Linux helper/tooling inputs; see references/caching.md*') { throw }
+        $ToolingBlocked = $true
+    } finally { $Mock.LinuxEnv = $PreviousLinuxEnv }
+    if (!$ToolingBlocked -or $Mock.DockerStarts -or $Mock.PackagingRuns -ne 2) { throw 'Legacy container resumed without tooling checks or recovery guidance' }
     $Mock.State = 'running'
     $Blocked = $false
     try {

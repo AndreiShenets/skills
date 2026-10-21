@@ -11,7 +11,8 @@ function Get-CustomBuildKey {
     $Scripts = switch ($Stage) {
         preflight { $Common + @('preflight.ps1', 'workflow.ps1') }
         windows { $Common + @('workflow.ps1') }
-        linux { $Common + @('build-with-wsl.ps1', 'linux-build.sh', 'linux-cache.ps1', 'linux-build.Dockerfile') }
+        # Linux embeds the client compiled/branded by workflow.ps1.
+        linux { $Common + @('workflow.ps1', 'build-with-wsl.ps1', 'linux-build.sh', 'linux-cache.ps1', 'linux-build.Dockerfile') }
         installer { $Common + @('workflow.ps1', 'preflight.ps1', 'build-with-wsl.ps1', 'linux-build.sh', 'linux-cache.ps1', 'linux-build.Dockerfile', 'wsl-smoke.sh') }
     }
     foreach ($Name in ($Scripts | Sort-Object -Unique)) {

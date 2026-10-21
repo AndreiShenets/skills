@@ -62,6 +62,8 @@ New-Item -ItemType Directory -Path $Root | Out-Null
 try {
     $Linux = Get-Content (Join-Path $Scripts 'linux-build.sh') -Raw
     $Start = $Linux.IndexOf('target=x86_64-unknown-linux-gnu')
+    $ClientStart = $Linux.IndexOf('# Replace generated client output')
+    $Client = $Linux.Substring($ClientStart, $Start - $ClientStart).Replace('/input/client', '"$TEST_ROOT/input/client"')
     $End = $Linux.IndexOf('flock -u 8', $Start) + 'flock -u 8'.Length
     $Cargo = $Linux.Substring($Start, $End - $Start).Replace('/cache/targets', '"$TEST_ROOT/cache"').Replace('/input/rebuild', '"$TEST_ROOT/rebuild"').Replace('/build/resource-monitor', '"$TEST_ROOT/output"')
     $Harness = @'
@@ -69,6 +71,12 @@ set -Eeuo pipefail
 export TEST_ROOT="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$TEST_ROOT/source"
 cd "$TEST_ROOT/source"
+mkdir -p apps/server/dist/client "$TEST_ROOT/input/client"
+echo stale > apps/server/dist/client/removed.js
+echo current > "$TEST_ROOT/input/client/index.html"
+__CLIENT__
+test ! -f apps/server/dist/client/removed.js
+test "$(cat apps/server/dist/client/index.html)" = current
 export LINUX_CACHE_NAMESPACE=fixture
 export LINUX_BUILD_INPUTS=fixture-tools
 rustc() { echo compiler-fixture; }
@@ -118,7 +126,7 @@ if bash "$0" --fail; then exit 10; fi
 test "$(cat "$TEST_ROOT/output/linux-x64/t3-resource-monitor")" = second
 echo 'PASS: locked Cargo execution, shared target reuse, rollback-safe package cleaning, forced rebuild, lock through copy, compilation failure'
 '@
-    $Harness = $Harness.Replace('__CARGO__', $Cargo)
+    $Harness = $Harness.Replace('__CARGO__', $Cargo).Replace('__CLIENT__', $Client)
     $File = Join-Path $Root 'cargo-cache.sh'
     [IO.File]::WriteAllText($File, $Harness.Replace("`r`n", "`n"))
     if ($IsWindows) {

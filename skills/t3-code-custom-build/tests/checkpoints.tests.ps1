@@ -39,5 +39,8 @@ try {
     Add-Content (Join-Path $Scripts 'linux-build.sh') '# Linux-only change'
     if ($BeforeWindows -cne (Get-CustomBuildKey -Stage windows -BuildSha source -Version 0.1.1) -or
         $BeforeLinux -ceq (Get-CustomBuildKey -Stage linux -BuildSha source -Version 0.1.1)) { throw 'Linux tooling did not invalidate only its dependent stages' }
+    $BeforeLinux = Get-CustomBuildKey -Stage linux -BuildSha source -Version 0.1.1
+    Add-Content (Join-Path $Scripts 'workflow.ps1') '# changed client compilation/branding'
+    if ($BeforeLinux -ceq (Get-CustomBuildKey -Stage linux -BuildSha source -Version 0.1.1)) { throw 'Linux archive ignored changed client compilation inputs' }
     Write-Host 'PASS: content-verified reuse; source/version/base/Connect invalidation; missing/tampered/interrupted checkpoints; failure invalidation'
 } finally { Remove-Item -LiteralPath $Root -Recurse -Force }

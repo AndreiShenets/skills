@@ -63,7 +63,7 @@ if ($Existing) {
     if ($ContainerImage -cne $LinuxImageId -or $ContainerEnv -cnotcontains "LINUX_BUILD_INPUTS=$LinuxInputs" -or
         $ContainerEnv -cnotcontains "SEA_NODE_VERSION=$SeaNode" -or $ContainerEnv -cnotcontains "VITE_PLUS_VERSION=$VpVersion" -or
         $ContainerEnv -cnotcontains "LINUX_CACHE_NAMESPACE=$CacheNamespace") {
-        throw 'Existing container has different Linux helper/tooling inputs; choose a new run ID'
+        throw 'Existing container has different Linux helper/tooling inputs; see references/caching.md#recover-a-retained-container to reset this run safely, then retry Build'
     }
 }
 $RebuildFile = Join-Path $Scratch "linux-rebuild-$RunId.txt"
