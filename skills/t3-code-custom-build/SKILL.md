@@ -35,7 +35,7 @@ Conflicts are agent work: resolve and stage in the printed worktree, then rerun 
 
 Commit reusable fixes to their owning `customizations/*` branches as well as the integrated build; build-only fixes disappear from future runs.
 
-Build timeout ≥900000 ms. Timed milestones identify dependency installation, compilation and packaging. Logs, checkpoints and failed-run Docker resources remain available for recovery; Linux reuses a prepared prerequisite image and tools/package/Cargo target caches in `t3-as-custom-linux-cache`. Check active processes/container before retrying `Build`.
+Set the shell-tool timeout to `1800000` ms (30 minutes) for `Build` and dependency installation, including standalone bootstrap/recovery installs. Timed milestones identify dependency installation, compilation and packaging. Logs, checkpoints and failed-run Docker resources remain available for recovery; Linux reuses a prepared prerequisite image and tools/package/Cargo target caches in `t3-as-custom-linux-cache`. Check active processes/container before retrying `Build`.
 
 Read `run.json`, `preflight.log`, and [the release-note contract](references/release-notes.md). Record agent-verified findings/descriptions in `$FindingsFile` using that contract's JSON shape, then generate the notes. Reuse still-accurate approved descriptions; generation cannot judge upstream equivalence or confirm human approval. Preview the generated Markdown and complete the semantic pre-publication checklist.
 
