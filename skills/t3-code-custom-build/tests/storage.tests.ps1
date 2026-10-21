@@ -40,6 +40,7 @@ try {
         $Saved = Get-Content -LiteralPath $Run.FullName -Raw | ConvertFrom-Json -AsHashtable
         if ($Saved.Scratch -ne $Run.DirectoryName) { throw 'Saved scratch directory disagrees with run.json location' }
         if ($Saved.Cache -ne (Join-Path $Data 'cache')) { throw 'Shared cache is not under release/as-custom' }
+        if ($Saved.Out -ne (Join-Path $Data $Saved.RunId)) { throw 'Artifacts depend on the initiating checkout' }
         if ($Saved.Work -ne (Join-Path $Data $Run.Directory.Name)) { throw 'Build worktree is not under release/as-custom' }
         if (!(Test-Path -LiteralPath "$($Run.FullName).lock")) { throw 'Run lock is not beside run.json' }
     }
@@ -51,6 +52,8 @@ try {
     git -C $Repo worktree add -b fixture-merge $MergeWorktree | Out-Null
     if ((Get-BuildDataDirectory $MergeWorktree) -ne $Data) { throw 'Nested merge checkout changed the shared data root' }
     if ((Get-BuildCacheDirectory $Repo) -ne (Get-BuildCacheDirectory $Linked)) { throw 'Linked checkout changed the shared cache root' }
+    git -C $Repo worktree add --detach (Join-Path $Root 'detached checkout') | Out-Null
+    if ((Get-BuildCacheDirectory (Join-Path $Root 'detached checkout')) -ne (Get-BuildCacheDirectory $Repo)) { throw 'Detached checkout changed the cache root' }
     if (Test-Path -LiteralPath (Join-Path $Repo '.git/as-custom')) { throw 'New run data was written inside Git metadata' }
     if (Test-Path -LiteralPath (Join-Path $Root 'repo-as-custom')) { throw 'New run data was written beside the repository' }
     if (git -C $Repo status --porcelain) { throw 'Run initialization dirtied the source checkout' }

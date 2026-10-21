@@ -17,6 +17,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 . (Join-Path $PSScriptRoot 'release-notes.ps1')
 . (Join-Path $PSScriptRoot 'cleanup.ps1')
 . (Join-Path $PSScriptRoot 'public-config.ps1')
+. (Join-Path $PSScriptRoot 'linux-cache.ps1')
 if ($Rebuild -and $Stage -ne 'Build') { throw 'Use Rebuild only with Build' }
 if ($PSBoundParameters.ContainsKey('SkipBranches') -and ($Stage -ne 'Sync' -or $Run)) {
     throw 'Choose SkipBranches when starting Sync; existing runs keep their saved selection'
@@ -45,7 +46,7 @@ if (!$Run) {
         Branches = @(); SkippedBranches = @($SkipBranches | Sort-Object -Unique)
         Customizations = [ordered]@{}; Integrated = [ordered]@{}; BuildBranch = "custom_builds/$RunId"
         Work = (Get-BuildWorktreeDirectory -Worktree $Repo -RunName (Split-Path $Scratch -Leaf))
-        Out = (Join-Path $Repo "release/as-custom/$RunId")
+        Out = (Join-Path (Split-Path $Cache) $RunId)
         BuildSha = ''; PreflightSha = ''; Merged = $false; Built = $false; WslSmoke = $false; ReleaseUrl = ''; Cache = $Cache
     }
     Save-Run
@@ -64,6 +65,7 @@ try {
     if (!$State.Contains('SkippedBranches')) { $State.SkippedBranches = @() }
     if ($Stage -in @('Merge', 'Build')) { Assert-BuildWorktreeLocation -Path $State.Work }
     if (!$State.Cache) { $State.Cache = Get-BuildCacheDirectory -Worktree $(if ($State.Repo) { $State.Repo } else { $State.Work }) }
+    Write-Host "Shared cache: $($State.Cache)"
 
     Invoke-BuildStep -Label $Stage -Action { switch ($Stage) {
     Sync {
@@ -153,32 +155,46 @@ try {
         $State.PreflightSha = ''
         Save-Run
         $ConnectConfig = Get-T3ConnectPublicConfig -Worktree $State.Work -Repo $(if ($State.Repo) { $State.Repo } else { $State.Work })
+        $LinuxImage = Get-LinuxBuildImage -Worktree $State.Work
+        $ResumeSha = (git -C $State.Work rev-parse HEAD).Trim()
+        $KeyInputs = @{ BuildSha = $ResumeSha; Version = $State.Version; MainSha = $State.MainSha; RunId = $State.RunId; PublicConfig = $ConnectConfig }
+        $PreflightLog = Join-Path $State.Scratch 'preflight.log'
+        $Archive = Join-Path $State.Out "t3-$($State.Version)-linux-x64.tar.gz"
+        $Installer = Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe"
+        $ReuseCompleteBuild = !$Rebuild -and $State.BuildSha -ceq $ResumeSha -and
+            (Test-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key (Get-CustomBuildKey @KeyInputs -Stage preflight) -Files @($PreflightLog)) -and
+            (Test-BuildCheckpoint -Scratch $State.Scratch -Name installer -Key (Get-CustomBuildKey @KeyInputs -ToolchainIdentity $LinuxImage) -Files @($Archive, $Installer))
         Push-Location $State.Work
         try {
-            Invoke-BuildStep -Label 'Windows dependencies (shared store)' -Action {
-                Invoke-WorktreeVp -Worktree $State.Work -BootstrapRepo $State.Repo -Arguments @('install', '--frozen-lockfile', '--', '--store-dir', (Join-Path $State.Cache 'pnpm-store'))
+            if ($ReuseCompleteBuild) { Write-Host 'Verified final artifacts need no dependency installation' }
+            else {
+                Invoke-BuildStep -Label 'Windows dependencies (shared store)' -Action {
+                    Invoke-WorktreeVp -Worktree $State.Work -BootstrapRepo $State.Repo -Arguments @('install', '--frozen-lockfile', '--', '--store-dir', (Join-Path $State.Cache 'pnpm-store'))
+                }
+                node scripts/update-release-package-versions.ts $State.Version
+                $Manifests = @('apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json')
+                foreach ($File in $Manifests) {
+                    if ((Get-Content $File -Raw | ConvertFrom-Json).version -ne $State.Version) { throw "Wrong version: $File" }
+                }
+                git add -- @Manifests
+                if (git diff --cached --name-only) { git commit -m "chore(release): stamp AS Custom $($State.Version) $($State.Stamp)" }
+                git push origin $State.BuildBranch
             }
-            node scripts/update-release-package-versions.ts $State.Version
-            $Manifests = @('apps/server/package.json', 'apps/desktop/package.json', 'apps/web/package.json', 'packages/contracts/package.json')
-            foreach ($File in $Manifests) {
-                if ((Get-Content $File -Raw | ConvertFrom-Json).version -ne $State.Version) { throw "Wrong version: $File" }
-            }
-            git add -- @Manifests
-            if (git diff --cached --name-only) { git commit -m "chore(release): stamp AS Custom $($State.Version) $($State.Stamp)" }
-            git push origin $State.BuildBranch
             Assert-Clean $State.Work
             $State.BuildSha = (git rev-parse HEAD).Trim()
-            $State.BuildKey = Get-CustomBuildKey -BuildSha $State.BuildSha -Version $State.Version -MainSha $State.MainSha -RunId $State.RunId -PublicConfig $ConnectConfig
+            $KeyInputs.BuildSha = $State.BuildSha
+            $State.BuildKey = Get-CustomBuildKey @KeyInputs -ToolchainIdentity $LinuxImage
+            $PreflightKey = Get-CustomBuildKey @KeyInputs -Stage preflight
+            $WindowsKey = Get-CustomBuildKey @KeyInputs -Stage windows
             Save-Run
-            $PreflightLog = Join-Path $State.Scratch 'preflight.log'
-            if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $State.BuildKey -Files @($PreflightLog))) {
+            if (!$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $PreflightKey -Files @($PreflightLog))) {
                 Write-Host 'Reusing verified preflight results (browser/live checks remain separate)'
             } else {
                 Clear-BuildCheckpoint -Scratch $State.Scratch -Name preflight
                 Invoke-CustomBuildPreflight -Worktree $State.Work -BaseRef $State.MainSha -LogPath $PreflightLog
                 Assert-Clean $State.Work
                 if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during preflight' }
-                Save-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $State.BuildKey -Files @($PreflightLog)
+                Save-BuildCheckpoint -Scratch $State.Scratch -Name preflight -Key $PreflightKey -Files @($PreflightLog)
             }
             Assert-Clean $State.Work
             if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during preflight' }
@@ -188,20 +204,32 @@ try {
             $Installer = Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe"
             $ReuseInstaller = !$Rebuild -and (Test-BuildCheckpoint -Scratch $State.Scratch -Name installer -Key $State.BuildKey -Files @($Archive, $Installer))
             if (!$ReuseInstaller) {
-                $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
-                try {
-                    $env:APP_VERSION = $State.Version
-                    Invoke-WithT3ConnectPublicConfig -Config $ConnectConfig -Action {
-                        Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
-                            Invoke-WorktreeVp -Worktree $State.Work -Arguments @('run', 'build:desktop')
-                            node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+                $WindowsOutputs = @(Get-WindowsBuildOutputs -Worktree $State.Work)
+                if (!$Rebuild -and $WindowsOutputs.Count -and
+                    (Test-BuildCheckpoint -Scratch $State.Scratch -Name windows -Key $WindowsKey -Files $WindowsOutputs)) {
+                    Write-Host 'Reusing verified Windows/server/client compilation'
+                } else {
+                    Clear-BuildCheckpoint -Scratch $State.Scratch -Name windows
+                    $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
+                    try {
+                        $env:APP_VERSION = $State.Version
+                        Invoke-WithT3ConnectPublicConfig -Config $ConnectConfig -Action {
+                            Invoke-BuildStep -Label 'Windows/server/client compilation' -Action {
+                                Invoke-WorktreeVp -Worktree $State.Work -Arguments @('run', 'build:desktop')
+                                node scripts/apply-web-brand-assets.ts production apps/server/dist/client
+                            }
                         }
-                    }
-                } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
+                    } finally { [Environment]::SetEnvironmentVariable('APP_VERSION', $PreviousAppVersion, 'Process') }
+                    Assert-Clean $State.Work
+                    if ((git rev-parse HEAD).Trim() -ne $State.BuildSha) { throw 'Source changed during Windows compilation' }
+                    $WindowsOutputs = @(Get-WindowsBuildOutputs -Worktree $State.Work)
+                    if (!$WindowsOutputs.Count) { throw 'Windows compilation outputs missing' }
+                    Save-BuildCheckpoint -Scratch $State.Scratch -Name windows -Key $WindowsKey -Files $WindowsOutputs
+                }
             }
         } finally { Pop-Location }
         if (!$ReuseInstaller) {
-            & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out -BuildKey $State.BuildKey -PublicConfig $ConnectConfig -Rebuild:$Rebuild
+            & (Join-Path $PSScriptRoot 'build-with-wsl.ps1') -Worktree $State.Work -Scratch $State.Scratch -RunId $State.RunId -Version $State.Version -OutputDir $State.Out -BuildKey $State.BuildKey -MainSha $State.MainSha -LinuxImageId $LinuxImage -PublicConfig $ConnectConfig -Rebuild:$Rebuild
         } else { Write-Host 'Reusing verified installer and Linux runtime' }
         if ($WslDistro) {
             $Script = (wsl.exe -d $WslDistro -- wslpath -u (Join-Path $PSScriptRoot 'wsl-smoke.sh')).Trim()

@@ -5,7 +5,7 @@ $Work = Join-Path $Root 'work'
 $Out = Join-Path $Root 'out'
 $Scratch = Join-Path $Root 'scratch'
 New-Item -ItemType Directory -Path $Work, $Out, $Scratch, "$Work/apps/server/dist/client", "$Work/scripts" | Out-Null
-$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; FailPreflight = $false; Preflights = 0; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @() }
+$Mock = @{ DockerRuns = 0; DockerStarts = 0; PackagingRuns = 0; FrontendRuns = 0; FailFrontend = $false; FailPackaging = $false; FailPreflight = $false; Preflights = 0; State = 'missing'; BuildSha = ''; CacheMounts = @(); SourceMounts = @(); StorePaths = @(); ImageId = ('sha256:' + ('a' * 64)); LinuxEnv = @() }
 $PreviousAppVersion = [Environment]::GetEnvironmentVariable('APP_VERSION', 'Process')
 $PreviousDesktopVersion = [Environment]::GetEnvironmentVariable('T3CODE_DESKTOP_VERSION', 'Process')
 $ConnectConfig = [ordered]@{
@@ -39,13 +39,17 @@ function node {
 
 function docker {
     switch ($args[0]) {
+        'image' { $Mock.ImageId }
         'ps' { if ($Mock.State -ne 'missing') { 'fixture-container' } }
         'inspect' {
             if ($args -contains '{{.State.Status}}') { $Mock.State }
-            else { ConvertTo-Json (@("BUILD_SHA=$($Mock.BuildSha)", 'BUILD_VERSION=0.1.1') + @($Mock.ConnectEnv)) -Compress }
+            elseif ($args -contains '{{.Image}}') { $Mock.ImageId }
+            else { ConvertTo-Json (@("BUILD_SHA=$($Mock.BuildSha)", 'BUILD_VERSION=0.1.1') + @($Mock.ConnectEnv) + @($Mock.LinuxEnv)) -Compress }
         }
         'run' {
             $Mock.ConnectEnv = @($ConnectConfig.Keys | ForEach-Object { "$_=$($ConnectConfig[$_])" })
+            $Mock.LinuxEnv = @($args | Where-Object { $_ -match '^(SEA_NODE_VERSION|VITE_PLUS_VERSION|LINUX_BUILD_INPUTS|LINUX_CACHE_NAMESPACE)=' })
+            if ($args -cnotcontains $Mock.ImageId) { throw 'Linux build did not use an immutable prepared image' }
             foreach ($Entry in $Mock.ConnectEnv) { if ($args -cnotcontains $Entry) { throw "Linux build missing Connect configuration: $($Entry.Split('=')[0])" } }
             if ($args -notcontains "BUILD_SHA=$($Mock.BuildSha)") { throw 'Wrong source SHA' }
             if ($args -notcontains 'SEA_NODE_VERSION=26.8.2') { throw 'SEA version not derived from source' }
@@ -89,11 +93,15 @@ function Invoke-TestVp {
         if ($env:APP_VERSION -ne '0.1.1') { throw 'Frontend saw inherited APP_VERSION' }
         if ($Mock.FailFrontend) { throw 'simulated frontend failure' }
         $Mock.FrontendRuns++
+        New-Item -ItemType Directory -Force -Path (Join-Path $Work 'apps/desktop/dist-electron') | Out-Null
+        Set-Content (Join-Path $Work 'apps/desktop/dist-electron/main.js') 'compiled desktop'
+        Set-Content (Join-Path $Work 'apps/server/dist/server.js') 'compiled server'
         $global:LASTEXITCODE = 0
         return
     }
     if ($args[0] -ne 'run' -or $args[1] -ne 'dist:desktop:win:x64') { throw "Wrong packaging command: $($args | ConvertTo-Json -Compress)" }
     Assert-ConnectEnvironment
+    if ($Mock.FailPackaging) { throw 'simulated packaging failure' }
     if ($args -notcontains '--skip-build' -or $args -notcontains '--wsl-runtime') { throw 'Missing WSL packaging argument' }
     $VersionIndex = [array]::IndexOf($args, '--build-version')
     if ($VersionIndex -lt 0 -or $args[$VersionIndex + 1] -ne '0.1.1') { throw 'Inherited desktop version was not overridden' }
@@ -114,7 +122,7 @@ try {
     New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
     Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
     Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'
-    Set-Content "$Work/.gitignore" @('node_modules/', 'release/')
+    Set-Content "$Work/.gitignore" @('node_modules/', 'release/', 'apps/desktop/dist-electron/', 'apps/server/dist/')
     foreach ($Package in @('apps/server', 'apps/desktop', 'apps/web', 'packages/contracts')) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Work $Package) | Out-Null
         Set-Content (Join-Path $Work "$Package/package.json") '{"version":"0.1.1"}'
@@ -215,9 +223,30 @@ try {
         throw 'Different runs must share caches but not source workspaces'
     }
     $ExpectedStore = [IO.Path]::GetFullPath((Join-Path $Work 'release/as-custom/cache/pnpm-store'))
-    if ($Mock.StorePaths.Count -ne 4 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
+    if ($Mock.StorePaths.Count -ne 3 -or @($Mock.StorePaths | Where-Object { [IO.Path]::GetFullPath($_) -ne $ExpectedStore }).Count) {
         throw 'Windows store was not reused outside the run scratch directory'
     }
+    # Packaging failures must preserve the independent compilation checkpoint.
+    $Mock.FailFrontend = $false
+    $Mock.State = 'missing'
+    $Mock.FailPackaging = $true
+    $Failed = $false
+    try { & $Workflow -Stage Build -Run $Run } catch {
+        if ($_.Exception.Message -ne 'simulated packaging failure') { throw }
+        $Failed = $true
+    }
+    if (!$Failed) { throw 'Packaging failure fixture did not fail' }
+    $Compiled = $Mock.FrontendRuns
+    $Mock.FailPackaging = $false
+    & $Workflow -Stage Build -Run $Run
+    if ($Mock.FrontendRuns -ne $Compiled) { throw 'Packaging retry repeated successful Windows compilation' }
+    $Installs = $Mock.StorePaths.Count
+    & $Workflow -Stage Build -Run $Run
+    if ($Mock.StorePaths.Count -ne $Installs) { throw 'Verified final-artifact retry installed dependencies' }
+    Set-Content (Join-Path $Out 'T3-Code-0.1.1-x64.exe') 'tampered installer again'
+    Set-Content (Join-Path $Work 'apps/desktop/dist-electron/main.js') 'tampered compilation'
+    & $Workflow -Stage Build -Run $Run
+    if ($Mock.FrontendRuns -ne $Compiled + 1) { throw 'Tampered compilation checkpoint was reused' }
     foreach ($Key in $ConnectConfig.Keys) {
         if ([Environment]::GetEnvironmentVariable($Key, 'Process') -cne $PreviousConnect[$Key]) { throw "Build leaked Connect configuration: $Key" }
     }

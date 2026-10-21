@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 : "${BUILD_VERSION:?}" "${BUILD_SHA:?}" "${SEA_NODE_VERSION:?}" "${VITE_PLUS_VERSION:?}"
+: "${LINUX_CACHE_NAMESPACE:?}"
 : "${T3CODE_CLERK_PUBLISHABLE_KEY:?}" "${T3CODE_CLERK_JWT_TEMPLATE:?}" "${T3CODE_CLERK_CLI_OAUTH_CLIENT_ID:?}" "${T3CODE_RELAY_URL:?}"
 export CI=true DEBIAN_FRONTEND=noninteractive
 export VP_HOME="/cache/tools/vite-plus-$VITE_PLUS_VERSION" VP_VERSION="$VITE_PLUS_VERSION" VP_NODE_VERSION="$SEA_NODE_VERSION"
 export PATH="/cache/tools/node-$SEA_NODE_VERSION/bin:$VP_HOME/bin:$PATH"
 export CARGO_HOME=/cache/cargo
 
-# Tool installation is confined to the container, never the host/WSL distro.
-if ! command -v python3 >/dev/null || ! command -v pkg-config >/dev/null; then
-  apt-get update
-  apt-get install -y --no-install-recommends python3 pkg-config ca-certificates
-fi
+# System tools are installed once in the prepared image, never on the host/WSL distro.
 mkdir -p /cache/downloads
 # Serialize first-time tool installation; concurrent builds keep their sources and outputs isolated.
 exec 9>/cache/tools.lock
@@ -59,9 +56,27 @@ echo "[$(date +%T)] Linux executable and resource monitor"
 APP_VERSION="$BUILD_VERSION" node apps/server/scripts/cli.ts build-exe --verbose
 mkdir -p apps/server/dist/client
 cp -a /input/client/. apps/server/dist/client/
-cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+target=x86_64-unknown-linux-gnu
+compiler=$( { printf '%s\n' "${LINUX_BUILD_INPUTS:?}"; rustc -vV; cc --version; } | sha256sum | cut -d ' ' -f 1)
+target_root="/cache/targets/$LINUX_CACHE_NAMESPACE/$compiler/$target"
+mkdir -p "$target_root"
+# Hold the shared target lock through the copy: another build must not replace the executable.
+exec 8>"$target_root/build.lock"
+flock 8
+export CARGO_TARGET_DIR="$target_root/release-build"
+if [ "$(cat /input/rebuild)" = 1 ]; then
+  export CARGO_TARGET_DIR
+  CARGO_TARGET_DIR=$(mktemp -d "$target_root/rebuild.XXXXXXXX")
+  trap 'rm -rf -- "$CARGO_TARGET_DIR"' EXIT
+fi
+# Never trust cross-container source mtimes (including after VM clock rollback).
+# Clean only this package, retaining compiled registry dependencies.
+package=$(cargo pkgid --locked --manifest-path native/resource-monitor/Cargo.toml)
+cargo clean --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "$target" --package "$package"
+cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "$target"
 mkdir -p /build/resource-monitor/linux-x64
-cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor /build/resource-monitor/linux-x64/
+cp "$CARGO_TARGET_DIR/$target/release/t3-resource-monitor" /build/resource-monitor/linux-x64/
+flock -u 8
 echo "[$(date +%T)] Linux archive and server smoke test"
 node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$BUILD_VERSION" --resource-monitor-dir /build/resource-monitor --output-dir /out
 node scripts/smoke-cli-archive.ts --archive "/out/t3-$BUILD_VERSION-linux-x64.tar.gz" --expect-version "$BUILD_VERSION"

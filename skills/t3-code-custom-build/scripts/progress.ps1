@@ -12,11 +12,19 @@ function Invoke-BuildStep {
     }
 }
 
+function Get-MainCheckoutDirectory {
+    param([Parameter(Mandatory)][string]$Worktree)
+    # Git lists the main checkout first, independent of the caller's branch/worktree.
+    $Entry = @(git -C $Worktree -c core.quotepath=false worktree list --porcelain)[0]
+    if (!$Entry.StartsWith('worktree ') -or !(Test-Path -LiteralPath (Join-Path $Entry.Substring(9) '.git'))) {
+        throw 'Cannot resolve the main Git checkout for build caches'
+    }
+    $Entry.Substring(9)
+}
+
 function Get-BuildDataDirectory {
     param([Parameter(Mandatory)][string]$Worktree)
-    $Common = (git -C $Worktree rev-parse --path-format=absolute --git-common-dir).Trim()
-    $MainCheckout = Split-Path $Common -Parent
-    Join-Path $MainCheckout 'release/as-custom'
+    Join-Path (Get-MainCheckoutDirectory -Worktree $Worktree) 'release/as-custom'
 }
 
 function Get-BuildCacheDirectory {
