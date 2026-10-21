@@ -31,8 +31,8 @@ try {
     git -C $Repo branch -d customizations/remote-only | Out-Null
     git -C $Repo worktree add $Occupied customizations/occupied | Out-Null
     $BuildPath = Get-BuildWorktreeDirectory -Worktree $Repo -RunName '2026_10_18_15_46-fixture'
-    $ExpectedBuildPath = Join-Path $Root 'repo-as-custom/2026_10_18_15_46-fixture'
-    if ([IO.Path]::GetFullPath($BuildPath) -ne [IO.Path]::GetFullPath($ExpectedBuildPath)) { throw 'Build worktree is not a short repository sibling' }
+    $ExpectedBuildPath = Join-Path $Repo 'release/as-custom/2026_10_18_15_46-fixture'
+    if ([IO.Path]::GetFullPath($BuildPath) -ne [IO.Path]::GetFullPath($ExpectedBuildPath)) { throw 'Build worktree is not under release/as-custom' }
     if ((Get-BuildWorktreeDirectory -Worktree $Occupied -RunName '2026_10_18_15_46-fixture') -ne $BuildPath) { throw 'Linked checkout changed the build-worktree root' }
     Assert-BuildWorktreeLocation -Path $BuildPath
     Assert-BuildWorktreeLocation -Path (Join-Path $Root '.github/build')
@@ -157,7 +157,7 @@ try {
         $AheadBlocked = $true
     }
     if (!$AheadBlocked -or (git -C $Origin rev-parse main).Trim() -ne $NewMain) { throw 'Ahead-main guard failed' }
-    Write-Host 'PASS: short sibling worktrees; Git-directory guard; remote-only inventory; approved skips; frozen selection; merge/resume; failure guards'
+    Write-Host 'PASS: release build-worktree paths; Git-directory guard; remote-only inventory; approved skips; frozen selection; merge/resume; failure guards'
 } finally {
     # Only this test's newly created fixture is removed.
     Remove-Item -LiteralPath $Root -Recurse -Force
