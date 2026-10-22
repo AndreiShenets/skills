@@ -67,11 +67,17 @@ function Invoke-CustomBuildPreflight {
     foreach ($File in $ManualTests) {
         "Manual verification not run (browser/live): $File" | Tee-Object -FilePath $LogPath -Append | Write-Host
     }
-    $PreviousElectronRunAsNode = [Environment]::GetEnvironmentVariable('ELECTRON_RUN_AS_NODE', 'Process')
+    $EnvironmentNames = @('ELECTRON_RUN_AS_NODE', 'GH_TOKEN', 'GITHUB_TOKEN')
+    $PreviousEnvironment = @{}
+    foreach ($Name in $EnvironmentNames) {
+        $PreviousEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    }
     Push-Location $Worktree
     try {
-        # The harness flag leaks into subprocess fixtures and makes them look like Electron probes.
-        [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $null, 'Process')
+        # Harness flags and operator credentials must not select different fixture behavior.
+        foreach ($Name in $EnvironmentNames) {
+            [Environment]::SetEnvironmentVariable($Name, [NullString]::Value, 'Process')
+        }
         if ($FormatFiles.Count) {
             foreach ($Batch in (Split-BuildFileArguments -Prefix @('fmt', '--check', '--no-error-on-unmatched-pattern') -Files $FormatFiles)) {
                 Invoke-PreflightCommand 'Preflight formatting' $Batch.Arguments
@@ -86,17 +92,26 @@ function Invoke-CustomBuildPreflight {
             Invoke-PreflightCommand "Preflight typecheck $Package" @('run', '--filter', "./$Package", 'typecheck')
         }
         if (@($Files | Where-Object { $_ -like 'scripts/*' }).Count -and (Test-Path 'scripts/tsconfig.json')) {
-            Invoke-PreflightCommand 'Preflight typecheck scripts' @('exec', 'tsc-rs', '--project', 'scripts/tsconfig.json', '--noEmit')
+            Invoke-PreflightCommand 'Preflight typecheck scripts' @('run', '--filter', './scripts', 'typecheck')
         }
         if ($Tests.Count) {
             # Electron's lazy first import can race when test workers install it concurrently.
             Invoke-PreflightCommand 'Preflight Electron runtime' @('run', '--filter', './apps/desktop', 'ensure:electron')
-            foreach ($Batch in (Split-BuildFileArguments -Prefix @('test', 'run') -Files $Tests)) {
+            $TestPrefix = @('test', 'run')
+            # Bound concurrent Git and settings-fixture I/O on Windows without retrying failures.
+            if ($IsWindows) { $TestPrefix += @('--maxWorkers', '4') }
+            foreach ($Batch in (Split-BuildFileArguments -Prefix $TestPrefix -Files $Tests)) {
                 Invoke-PreflightCommand 'Preflight focused tests' $Batch.Arguments
             }
         }
     } finally {
-        [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $PreviousElectronRunAsNode, 'Process')
+        foreach ($Name in $EnvironmentNames) {
+            if ($null -eq $PreviousEnvironment[$Name]) {
+                [Environment]::SetEnvironmentVariable($Name, [NullString]::Value, 'Process')
+            } else {
+                [Environment]::SetEnvironmentVariable($Name, $PreviousEnvironment[$Name], 'Process')
+            }
+        }
         Pop-Location
     }
 }
