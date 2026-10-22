@@ -29,7 +29,8 @@ try {
     git -C $Work config user.email 'skill-test@example.invalid'
     git -C $Work config commit.gpgsign false
     git -C $Work config core.hooksPath (Join-Path $Root 'empty-hooks')
-    Set-Content "$Work/apps/web/package.json" '{"name":"web","scripts":{"typecheck":"tsc-rs --noEmit"}}'
+    Set-Content "$Work/apps/web/package.json" '{"name":"web"}'
+    Set-Content "$Work/apps/web/vite.config.ts" 'export default { run: { tasks: { typecheck: { command: "tsc-rs --noEmit" } } } };'
     Set-Content "$Work/apps/desktop/package.json" '{"name":"desktop","scripts":{"ensure:electron":"node scripts/ensure-electron-runtime.mjs"}}'
     Set-Content "$Work/apps/untouched/package.json" '{"name":"untouched","scripts":{"typecheck":"tsc-rs --noEmit"}}'
     Set-Content "$Work/apps/deleted/package.json" '{"name":"deleted","scripts":{"typecheck":"tsc-rs --noEmit"}}'

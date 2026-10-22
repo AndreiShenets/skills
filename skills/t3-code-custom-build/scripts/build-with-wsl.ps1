@@ -30,6 +30,10 @@ $Client = Join-Path $Worktree 'apps/server/dist/client'
 if (!(Test-Path (Join-Path $Client 'index.html'))) { throw 'Build desktop/server/web first' }
 $Config = Get-Content (Join-Path $Worktree 'apps/server/vite.config.ts') -Raw
 $SeaNode = [regex]::Match($Config, 'const SEA_NODE_VERSION = ["'']([^"'']+)["'']').Groups[1].Value
+if (!$SeaNode -and $Config -match 'const\s+cliNodeVersion\s*=\s*rootPackageJson\.engines\.node\s*;' -and
+    $Config -match '\bnodeVersion\s*:\s*cliNodeVersion\b') {
+    $SeaNode = (Get-Content (Join-Path $Worktree 'package.json') -Raw | ConvertFrom-Json).engines.node
+}
 if ($SeaNode -notmatch '^\d+\.\d+\.\d+$') { throw 'Inspect current SEA Node configuration' }
 Push-Location $Worktree
 try { $VpVersion = (node -p "require('vite-plus/package.json').version").Trim() }
