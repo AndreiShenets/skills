@@ -3,17 +3,44 @@ $PSNativeCommandUseErrorActionPreference = $true
 $Root = Join-Path ([IO.Path]::GetTempPath()) ("t3-skill-preflight-test-" + [guid]::NewGuid().ToString('N'))
 $Work = Join-Path $Root 'work'
 $Log = Join-Path $Root 'preflight.log'
-$Mock = @{ Calls = @(); FailOn = ''; ExitCode = 0 }
-$PreviousElectronRunAsNode = [Environment]::GetEnvironmentVariable('ELECTRON_RUN_AS_NODE', 'Process')
+$Mock = @{ Calls = @(); FailOn = ''; ThrowOn = ''; ExitCode = 0 }
+$PreflightEnvironment = @('ELECTRON_RUN_AS_NODE', 'GH_TOKEN', 'GITHUB_TOKEN')
+$PreviousEnvironment = @{}
+foreach ($Name in $PreflightEnvironment) {
+    $PreviousEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+}
+
+function Assert-CallerState {
+    param([string]$Location, [switch]$Unset, [switch]$Empty)
+    if ((Get-Location).Path -ne $Location) { throw 'Caller location was not restored' }
+    foreach ($Name in $PreflightEnvironment) {
+        $Expected = if ($Unset) { $null } elseif ($Empty) { '' } else { "fixture-$Name" }
+        if ([Environment]::GetEnvironmentVariable($Name, 'Process') -cne $Expected) {
+            throw "Caller environment was not restored: $Name"
+        }
+    }
+}
+
+function Assert-TestWorkers {
+    param([string[]]$Arguments)
+    $Index = [array]::IndexOf($Arguments, '--maxWorkers')
+    if ($IsWindows) {
+        if ($Index -ne 2 -or $Arguments[$Index + 1] -cne '4') { throw 'Windows tests need four workers in every batch' }
+    } elseif ($Index -ne -1) { throw 'Non-Windows test concurrency changed' }
+    if ($Arguments -contains '--retry') { throw 'Focused checks must not retry failures' }
+}
 
 function node {
     if ($args[0] -notmatch '[\\/]bin[\\/]vp$') { throw 'Preflight did not invoke the worktree-local Node CLI' }
     $Arguments = @($args | Select-Object -Skip 1)
-    if ($env:ELECTRON_RUN_AS_NODE) { throw 'Harness environment leaked into preflight' }
+    foreach ($Name in $PreflightEnvironment) {
+        if ($null -ne [Environment]::GetEnvironmentVariable($Name, 'Process')) { throw "Caller environment leaked into preflight: $Name" }
+    }
     $Mock.Calls += ,$Arguments
     $Kind = if ($Arguments[-1] -eq 'ensure:electron') { 'electron' }
         elseif ($Arguments[0] -eq 'run' -or $Arguments[0] -eq 'exec') { 'typecheck' }
         else { $Arguments[0] }
+    if ($Kind -eq $Mock.ThrowOn) { throw 'simulated invocation exception' }
     $global:LASTEXITCODE = if ($Kind -eq $Mock.FailOn) { $Mock.ExitCode } else { 0 }
     if ($LASTEXITCODE) { Write-Output 'simulated check failure' }
 }
@@ -42,6 +69,7 @@ try {
     Set-Content "$Work/apps/web/src/existing.live.spec.ts" 'unchanged live sibling'
     Set-Content "$Work/apps/web/src/unchanged.browser.test.tsx" 'unrelated browser test'
     Set-Content "$Work/scripts/tsconfig.json" '{}'
+    Set-Content "$Work/scripts/package.json" '{"name":"scripts","scripts":{"typecheck":"tsc --noEmit"}}'
     git -C $Work add .
     git -C $Work commit -m baseline | Out-Null
     $Base = (git -C $Work rev-parse HEAD).Trim()
@@ -56,19 +84,23 @@ try {
     git -C $Work add .
     git -C $Work commit -m customization | Out-Null
     . (Join-Path $PSScriptRoot '../scripts/preflight.ps1')
-    $env:ELECTRON_RUN_AS_NODE = '1'
+    foreach ($Name in $PreflightEnvironment) { [Environment]::SetEnvironmentVariable($Name, "fixture-$Name", 'Process') }
     $Location = (Get-Location).Path
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath $Log
-    if ($env:ELECTRON_RUN_AS_NODE -ne '1' -or (Get-Location).Path -ne $Location) { throw 'Caller state was not restored' }
+    Assert-CallerState -Location $Location
     if ($Mock.Calls.Count -ne 7) { throw 'Expected formatting, lint, package/scripts typechecks, Electron initialization, and focused tests' }
     if ($Mock.Calls[0][0] -ne 'fmt' -or $Mock.Calls[1][0] -ne 'lint' -or $Mock.Calls[-1][0] -ne 'test') { throw 'Wrong validation order' }
     if (($Mock.Calls[-2] -join ' ') -cne 'run --filter ./apps/desktop ensure:electron') { throw 'Initialize the checkout Electron runtime before focused tests' }
     if ((Get-Content $Log -Raw) -notmatch 'PASS: Preflight Electron runtime') { throw 'Missing Electron initialization report' }
     $Typecheck = @($Mock.Calls | Where-Object { $_[0] -eq 'run' -and $_[-1] -eq 'typecheck' })
-    if ($Typecheck.Count -ne 2 -or $Typecheck[0][2] -ne './apps/deleted' -or $Typecheck[1][2] -ne './apps/web') {
+    if ($Typecheck.Count -ne 3 -or $Typecheck[0][2] -ne './apps/deleted' -or $Typecheck[1][2] -ne './apps/web') {
         throw 'Typechecks must cover affected packages, including deletions, without checking unrelated packages'
     }
+    if (($Typecheck[2] -join ' ') -cne 'run --filter ./scripts typecheck' -or @($Mock.Calls | Where-Object { $_ -contains 'tsc-rs' }).Count) {
+        throw 'Scripts must use their package typecheck, not a hard-coded compiler executable'
+    }
     $Test = $Mock.Calls[-1]
+    Assert-TestWorkers -Arguments $Test
     if ($Test -notcontains 'apps/web/src/new file.test.ts' -or $Test -notcontains 'apps/web/src/existing.test.ts') { throw 'Missing changed/sibling test' }
     if (@($Test | Where-Object { $_ -match 'browser|live|deleted|unchanged' }).Count) { throw 'Unsafe or unrelated test selected' }
     if ((Get-Content $Log -Raw) -notmatch 'Manual verification not run.*authorized.browser.test.tsx') { throw 'Missing manual-test report' }
@@ -92,11 +124,13 @@ try {
             if ($_.Exception.Message -notlike '*failed (exit 2)*') { throw }
             $Failed = $true
         }
-        if (!$Failed -or $env:ELECTRON_RUN_AS_NODE -ne '1' -or (Get-Location).Path -ne $Location) { throw 'Failure did not stop checks or restore caller state' }
+        if (!$Failed) { throw 'Failure did not stop checks' }
+        Assert-CallerState -Location $Location
         if ((Get-Content $Log -Raw) -notmatch 'FAIL: .*exit 2') { throw 'Missing failed-check report' }
         $ArchivedLog = Join-Path $Root ('preflight.attempt-{0:D4}.log' -f $Attempt)
         if (!(Test-Path $ArchivedLog) -or (Get-Content $ArchivedLog -Raw) -cne $PreviousLog) { throw 'Retry overwrote the previous attempt log' }
         if ($Kind -ne 'test' -and @($Mock.Calls | Where-Object { $_[0] -eq 'test' }).Count) { throw 'Checks continued after failure' }
+        if ($Kind -eq 'test' -and @($Mock.Calls | Where-Object { $_[0] -eq 'test' }).Count -ne 1) { throw 'Failed focused tests were retried' }
     }
     $Mock.Calls = @()
     $Mock.FailOn = ''
@@ -114,23 +148,60 @@ try {
     $Mock.Calls = @()
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath (Join-Path $Root 'batched.log')
     $TestBatches = @($Mock.Calls | Where-Object { $_[0] -eq 'test' })
+    foreach ($Batch in $TestBatches) { Assert-TestWorkers -Arguments $Batch }
     $Initializations = @($Mock.Calls | Where-Object { $_[-1] -eq 'ensure:electron' })
     if ($TestBatches.Count -lt 2 -or $Initializations.Count -ne 1) { throw 'Initialize Electron once, not once per focused-test batch' }
     $FirstTest = @($Mock.Calls | ForEach-Object { $_[0] }).IndexOf('test')
     if ($Mock.Calls[$FirstTest - 1][-1] -ne 'ensure:electron') { throw 'Batched tests started before Electron initialization' }
     Set-Item Function:Split-BuildFileArguments $SplitArguments
 
+    $Mock.Calls = @()
+    $Mock.ThrowOn = 'test'
+    $Threw = $false
+    try { Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath (Join-Path $Root 'throwing.log') } catch {
+        if ($_.Exception.Message -notlike '*simulated invocation exception*') { throw }
+        $Threw = $true
+    }
+    if (!$Threw) { throw 'Invocation exception was swallowed' }
+    Assert-CallerState -Location $Location
+    $Mock.ThrowOn = ''
+
+    foreach ($Name in $PreflightEnvironment) { [Environment]::SetEnvironmentVariable($Name, '', 'Process') }
+    $Mock.ThrowOn = 'fmt'
+    $Threw = $false
+    try { Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $Base -LogPath (Join-Path $Root 'empty-environment.log') } catch {
+        if ($_.Exception.Message -notlike '*simulated invocation exception*') { throw }
+        $Threw = $true
+    }
+    if (!$Threw) { throw 'Empty-environment invocation exception was swallowed' }
+    Assert-CallerState -Location $Location -Empty
+    $Mock.ThrowOn = ''
+
     $NoTestBase = (git -C $Work rev-parse HEAD).Trim()
     Set-Content "$Work/README.md" 'Documentation-only customization'
     git -C $Work add README.md
     git -C $Work commit -m documentation | Out-Null
     $Mock.Calls = @()
-    [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $null, 'Process')
+    foreach ($Name in $PreflightEnvironment) { [Environment]::SetEnvironmentVariable($Name, [NullString]::Value, 'Process') }
     Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $NoTestBase -LogPath (Join-Path $Root 'no-tests.log')
     if ($Mock.Calls.Count -ne 1 -or $Mock.Calls[0][0] -ne 'fmt') { throw 'Scopes without tests must not initialize Electron' }
-    if ($env:ELECTRON_RUN_AS_NODE -or (Get-Location).Path -ne $Location) { throw 'An unset harness flag or caller location was not restored' }
-    Write-Host 'PASS: scoped checks; single Electron initialization before batches; initialization failure guard; retry logs; environment restoration'
+    Assert-CallerState -Location $Location -Unset
+    $Mock.FailOn = 'fmt'
+    $Failed = $false
+    try { Invoke-CustomBuildPreflight -Worktree $Work -BaseRef $NoTestBase -LogPath (Join-Path $Root 'unset-failure.log') } catch {
+        if ($_.Exception.Message -notlike '*failed (exit 2)*') { throw }
+        $Failed = $true
+    }
+    if (!$Failed) { throw 'Unset-environment failure did not stop checks' }
+    Assert-CallerState -Location $Location -Unset
+    Write-Host 'PASS: package typechecks; isolated/restored credentials and harness flags; bounded Windows test batches; single Electron initialization; failure/exception guards; archived logs'
 } finally {
-    [Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $PreviousElectronRunAsNode, 'Process')
+    foreach ($Name in $PreflightEnvironment) {
+        if ($null -eq $PreviousEnvironment[$Name]) {
+            [Environment]::SetEnvironmentVariable($Name, [NullString]::Value, 'Process')
+        } else {
+            [Environment]::SetEnvironmentVariable($Name, $PreviousEnvironment[$Name], 'Process')
+        }
+    }
     Remove-Item -LiteralPath $Root -Recurse -Force
 }
