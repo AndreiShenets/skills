@@ -1,3 +1,4 @@
+param([switch]$LegacyNodeVersion)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $Root = Join-Path ([System.IO.Path]::GetTempPath()) ("t3-skill-build-test-" + [guid]::NewGuid().ToString('N'))
@@ -131,7 +132,15 @@ try {
     git -C $Work config commit.gpgsign false
     git -C $Work config core.hooksPath (Join-Path $Root 'empty-hooks')
     Set-Content "$Work/apps/server/dist/client/index.html" '<html></html>'
-    Set-Content "$Work/apps/server/vite.config.ts" 'const SEA_NODE_VERSION = "26.8.2";'
+    Set-Content "$Work/apps/server/vite.config.ts" @'
+import rootPackageJson from "../../package.json" with { type: "json" };
+const cliNodeVersion = rootPackageJson.engines.node;
+const packExecutableTargets = [{ nodeVersion: cliNodeVersion }];
+'@
+    Set-Content "$Work/package.json" '{"engines":{"node":"26.8.2"}}'
+    if ($LegacyNodeVersion) {
+        Set-Content "$Work/apps/server/vite.config.ts" 'const SEA_NODE_VERSION = "26.8.2";'
+    }
     New-Item -ItemType Directory -Path "$Work/node_modules/vite-plus/bin" -Force | Out-Null
     Set-Content "$Work/node_modules/vite-plus/package.json" '{"bin":{"vp":"bin/vp"}}'
     Set-Content "$Work/node_modules/vite-plus/bin/vp" 'fixture CLI'

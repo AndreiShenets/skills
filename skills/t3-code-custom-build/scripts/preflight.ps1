@@ -32,7 +32,11 @@ function Invoke-CustomBuildPreflight {
         if ($_ -match '^((?:apps|packages)/[^/]+)/') { $Matches[1] }
     } | Sort-Object -Unique | Where-Object {
         $Manifest = Join-Path $Worktree "$_/package.json"
-        (Test-Path -LiteralPath $Manifest) -and (Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json).scripts.typecheck
+        $ViteConfig = Join-Path $Worktree "$_/vite.config.ts"
+        (Test-Path -LiteralPath $Manifest) -and (
+            (Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json).scripts.typecheck -or
+            ((Test-Path -LiteralPath $ViteConfig) -and (Get-Content -LiteralPath $ViteConfig -Raw) -match '\btypecheck\s*:')
+        )
     })
 
     function Invoke-PreflightCommand {
