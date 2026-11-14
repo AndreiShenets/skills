@@ -20,7 +20,7 @@ Read the printed review JSON. The shared ledger holds descriptions, classificati
 - **delta**: examine the listed upstream commits and main/published file diffs. Search all newly merged PRs and newly published releases since `previousCheckedAt`, including stable releases even when the nightly is unchanged. Use path/keyword matches for prioritization, not as proof of no overlap. Inspect relevant changes semantically, including refactors, dependencies and reverts.
 - **full**: research the customization normally. This applies to new/changed customizations, changed verification policy, missing/corrupt cache, unavailable history and non-descendant upstream snapshots.
 
-Every plan requires agent verification. An unchanged snapshot still needs new-release discovery and the retirement check below; no cached scope or classification authorizes a disposition.
+Every plan requires agent verification and the [overlap decision gate](../SKILL.md). Unchanged snapshots still need new-release discovery; cached findings never authorize a disposition.
 
 After verification and any required user decisions, write `$FindingsFile` in the [release-note input shape](release-notes.md#generation-input), then save the reusable evidence:
 
@@ -29,18 +29,6 @@ After verification and any required user decisions, write `$FindingsFile` in the
 ```
 
 Save again from the final run findings after `Notes` if merging changed customization SHAs or descriptions. The ledger is atomically replaced under an exclusive writer lock; concurrent readers see a complete old or new snapshot. A busy writer stops Save; retry Save rather than losing findings. Failed builds leave research available for the next run. No branch changes or network calls are performed by this helper.
-
-### Overlap decisions
-
-Judge the original user need separately from the surviving branch diff. Reconstruct that need from the source request, branch history and merged contributions; inspect follow-up PRs that complete or change the upstream implementation. Compare observable behavior in the published release and current main, not implementation identity or changed-line counts.
-
-For each residual behavior, distinguish a substantial unmet requirement from a minor refinement, an older policy override, or a later scope addition. Explain the practical loss or change if it is dropped. A small diff can implement the entire requested feature; a large old implementation can be replaced by a different upstream design.
-
-Pause before Sync for full coverage **or** an original need solved with only refinements/overrides remaining. Also flag branches where the original fix is upstream but later additions now justify keeping the branch: those additions are a separate human scope decision, not proof the original fix is missing. Report upstream behavior, residuals, a recommendation and immutable PR/release/code evidence; ask keep, skip this run, remove, or whether to trim a redundant portion. Keep strict coverage labels: a retirement candidate can still have partial coverage.
-
-Example: upstream tracks shell lifecycle and honors explicit waits, while the branch marks every running command as Waiting. Flag the branch for a decision: an unawaited dev server keeping a thread in Working is an older policy override, not missing shell tracking.
-
-Retain branches with substantial unmet requirements or uncertain/unreleased coverage unless the user decides otherwise. Record the covered need and residual differences in `finding`, and this run's approved disposition in `decision`; use the existing release-note JSON shape. Approvals are never inferred from a recommendation, a cached finding, or a prior run.
 
 ## Build reuse
 
