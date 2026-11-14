@@ -20,7 +20,7 @@ Read the printed review JSON. The shared ledger holds descriptions, classificati
 - **delta**: examine the listed upstream commits and main/published file diffs. Search all newly merged PRs and newly published releases since `previousCheckedAt`, including stable releases even when the nightly is unchanged. Use path/keyword matches for prioritization, not as proof of no overlap. Inspect relevant changes semantically, including refactors, dependencies and reverts.
 - **full**: research the customization normally. This applies to new/changed customizations, changed verification policy, missing/corrupt cache, unavailable history and non-descendant upstream snapshots.
 
-Every plan requires agent verification. An unchanged snapshot still needs new-release discovery; no scope authorizes an exclusion. Retain uncertain/partial/unreleased customizations. Full coverage still requires all required behavior to be merged, published and present on main, followed by this run's explicit keep/skip/remove decision.
+Every plan requires agent verification and the [overlap decision gate](../SKILL.md). Unchanged snapshots still need new-release discovery; cached findings never authorize a disposition.
 
 After verification and any required user decisions, write `$FindingsFile` in the [release-note input shape](release-notes.md#generation-input), then save the reusable evidence:
 
