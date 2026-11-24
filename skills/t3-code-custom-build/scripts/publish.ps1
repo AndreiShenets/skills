@@ -23,14 +23,18 @@ function Get-RemoteTagCommit {
 
 function Publish-CustomRelease {
     param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$NotesFile)
-    $AssetName = "T3-Code-AS-Custom-$($State.Version)-$($State.Stamp)-x64.exe"
+    $DesktopManifest = Get-Content -LiteralPath (Join-Path $State.Work 'apps/desktop/package.json') -Raw | ConvertFrom-Json
+    $AsCode = $DesktopManifest.productName -ceq 'AS Code (Beta)'
+    $AssetBrand = if ($AsCode) { 'AS-Code' } else { 'T3-Code-AS-Custom' }
+    $ReleaseBrand = if ($AsCode) { 'AS Code (unofficial fork)' } else { 'T3 Code AS Custom' }
+    $AssetName = "$AssetBrand-$($State.Version)-$($State.Stamp)-x64.exe"
     $Installer = Join-Path $State.Out $AssetName
     Copy-Item (Join-Path $State.Out "T3-Code-$($State.Version)-x64.exe") $Installer
     $Checksums = Join-Path $State.Out 'SHA256SUMS'
     $ExeSha = (Get-FileHash $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
     "$ExeSha  $AssetName" | Set-Content $Checksums -Encoding utf8NoBOM
     $Tag = "as-custom-v$($State.Version)-$($State.Stamp)"
-    $Title = "T3 Code AS Custom $($State.Version) $($State.Stamp) ($($State.MainSha.Substring(0, 12)))"
+    $Title = "$ReleaseBrand $($State.Version) $($State.Stamp) ($($State.MainSha.Substring(0, 12)))"
     $Local = @(git -C $State.Work for-each-ref '--format=%(refname)' "refs/tags/$Tag")
     if ($Local -ccontains "refs/tags/$Tag") {
         if ((git -C $State.Work rev-parse "$Tag^{commit}").Trim() -ne $State.BuildSha) { throw 'Local tag target mismatch' }
