@@ -1,12 +1,14 @@
 ---
 name: t3-code-custom-build
-description: Sync T3 Code, merge customizations, build Windows x64 with WSL, and publish an AS Custom release.
+description: Sync T3 Code, merge customizations, build Windows x64 with WSL, and publish an AS Code prerelease.
 disable-model-invocation: true
 ---
 
-# T3 Code AS Custom
+# AS Code Custom Build
 
 PowerShell 7; Windows x64; Linux Docker daemon. Resolve `$Skill` from the loaded skill's base directory and `$Repo` from the target T3 Code checkout.
+
+Make durable workflow changes in the skills repository at `skills/t3-code-custom-build/`. Use the installed copy to run the workflow.
 
 **First: check upstream overlap, before Sync/Merge/Build.**
 1. Fetch current `pingdotgg/t3code:main`, upstream release tags, and remote `customizations/*` without merging or pushing. Establish each customization's original user need from its source issue/PR and history, then search merged upstream PRs and published releases (including nightlies) for equivalent behavior. Include the user's merged contributions and follow-up fixes, not just similarly named PRs. Consider issues only as pointers to merged, released implementations; exclude open PRs and closed-unmerged PRs from the overlap check and report.
@@ -47,6 +49,8 @@ Read `run.json`, `preflight.log`, and [the release-note contract](references/rel
 ```
 
 `Notes` saves the findings and generated `release-notes.md` under the run scratch directory. `Publish` verifies the artifact checkpoint and regenerates the expected notes before uploading the renamed installer + `SHA256SUMS` to a draft fork prerelease. It verifies downloaded bytes, tag target and release body, then publishes without marking latest. Mismatched inputs stop publication; edit the findings and rerun `Notes` rather than hand-editing the Markdown. Older runs without checkpoints must rerun `Build` and `Notes` first.
+
+`Publish` uses the frozen build's desktop product name: AS Code builds use `AS-Code-<version>-<stamp>-x64.exe` and an `AS Code (unofficial fork)` title; older builds retain their legacy names. Both use the `as-custom-v<version>-<stamp>` tag scheme.
 
 After verified publication, remove only this run's stopped Docker container and its verified `/build` volume. Keep the shared cache, artifacts, worktree and logs. Failed/unpublished runs are retained. Cleanup failures set `CleanupPending` without losing `ReleaseUrl`; repeat `Publish` to retry cleanup without reuploading. Active/mismatched containers and unverified orphan volumes require investigation, not forced removal or pruning.
 

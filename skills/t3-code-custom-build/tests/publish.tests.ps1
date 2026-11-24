@@ -1,3 +1,5 @@
+param([switch]$LegacyBrand)
+
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $Root = Join-Path ([IO.Path]::GetTempPath()) ("t3-skill-publish-test-" + [guid]::NewGuid().ToString('N'))
@@ -82,7 +84,9 @@ try {
     git -C $Work config commit.gpgsign false
     git -C $Work config tag.gpgsign false
     git -C $Work config core.hooksPath (Join-Path $Root 'empty-hooks')
-    Set-Content (Join-Path $Work 'source.txt') 'fixture'
+    $Desktop = New-Item -ItemType Directory -Path (Join-Path $Work 'apps/desktop')
+    $ProductName = if ($LegacyBrand) { 'T3 Code (Beta)' } else { 'AS Code (Beta)' }
+    @{ productName = $ProductName } | ConvertTo-Json | Set-Content (Join-Path $Desktop.FullName 'package.json')
     git -C $Work add .
     git -C $Work commit -m fixture | Out-Null
     git -C $Work remote add origin (Join-Path $Root 'origin.git')
@@ -153,12 +157,18 @@ try {
     if ((Get-Content $Run -Raw | ConvertFrom-Json).CleanupPending -or $Mock.CleanupAttempts -ne 2) { throw 'Completed publication did not retry cleanup' }
     if ($Mock.Creates -ne 1 -or $Mock.Uploads -ne 2 -or $Mock.Edits -ne 1) { throw 'Resume duplicated a release mutation' }
     if ((Get-Content $Run -Raw | ConvertFrom-Json).ReleaseUrl -ne $Mock.Release.url) { throw 'Published state was not recovered' }
+    $InstallerName = if ($LegacyBrand) { 'T3-Code-AS-Custom-0.1.1-202610171539-x64.exe' } else { 'AS-Code-0.1.1-202610171539-x64.exe' }
+    $TitleBrand = if ($LegacyBrand) { 'T3 Code AS Custom' } else { 'AS Code (unofficial fork)' }
+    if ($Mock.Release.tagName -cne 'as-custom-v0.1.1-202610171539' -or
+        $Mock.Release.name -cne "$TitleBrand 0.1.1 202610171539 ($($Sha.Substring(0, 12)))" -or
+        !$Mock.Bytes.ContainsKey($InstallerName) -or !$Mock.Bytes.ContainsKey('SHA256SUMS')) {
+        throw "Unexpected release branding for $ProductName"
+    }
 
     $State = Get-Content $Run -Raw | ConvertFrom-Json -AsHashtable
     $State.Timestamp = '2026-10-17T15:39:00.0000000+05:30'
     $State.ReleaseUrl = ''
     $State | ConvertTo-Json | Set-Content $Run
-    $InstallerName = 'T3-Code-AS-Custom-0.1.1-202610171539-x64.exe'
     $Mock.Bytes[$InstallerName][0] = $Mock.Bytes[$InstallerName][0] -bxor 1
     $MismatchBlocked = $false
     try { & $Workflow -Stage Publish -Run $Run -NotesFile $Notes } catch {
@@ -166,7 +176,9 @@ try {
         $MismatchBlocked = $true
     }
     if (!$MismatchBlocked -or $Mock.Uploads -ne 2 -or $Mock.Edits -ne 1) { throw 'Published asset mismatch was not blocked safely' }
-    Write-Host 'PASS: draft/upload/download/publication interruption recovery; idempotent completion; mismatched published bytes blocked'
+    Write-Host "PASS ($ProductName): release branding, interruption recovery, idempotent completion, and checksum mismatch rejection"
 } finally {
     Remove-Item -LiteralPath $Root -Recurse -Force
 }
+
+if (!$LegacyBrand) { & $PSCommandPath -LegacyBrand }
